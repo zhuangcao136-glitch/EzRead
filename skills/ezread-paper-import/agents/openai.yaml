@@ -1,0 +1,6 @@
+interface:
+  display_name: "EzRead 论文导入整理"
+  short_description: "按论文结构整理英文原文、保留源文定位，并自动归入研究主题合集"
+  default_prompt: "使用 $ezread-paper-import 整理论文导入后的英文原文，校验信息分组、自然段和源文完整性，并优先复用已有研究主题合集。"
+policy:
+  allow_implicit_invocation: true

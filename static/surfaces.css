@@ -1,0 +1,131 @@
+/* One corner system for every UI surface; imported figures retain their own geometry.
+   The superellipse is a web approximation of continuous corners, not Apple's renderer. */
+:root {
+  --radius-xs:.45rem;
+  --radius-sm:.7rem;
+  --radius-control:.9rem;
+  --radius-surface:1.25rem;
+  --radius-menu:1.5rem;
+  --radius-dialog:2rem;
+  --radius-card:2.4rem;
+  --radius-cover:calc(var(--radius-card) - 1.1rem);
+  --continuous-corner:superellipse(1.45);
+  --edge-light-top:rgb(255 255 255 / .58);
+  --edge-light-side:rgb(255 255 255 / .3);
+  --edge-light-bottom:rgb(255 255 255 / .16);
+  --edge-light-soft:rgb(255 255 255 / .1);
+}
+:root[data-theme="graphite"] {
+  --edge-light-top:rgb(255 255 255 / .38);
+  --edge-light-side:rgb(255 255 255 / .22);
+  --edge-light-bottom:rgb(255 255 255 / .1);
+  --edge-light-soft:rgb(255 255 255 / .06);
+}
+
+/* Tokens own the radius cascade, including older reader/settings component rules. */
+:is(.button,.nav-item,.filter-trigger,.filter-menu-option,.card-context-menu button,
+    .settings-tabs [role="tab"],.theme-choice,.library-footer .legend-tile,
+    .field input,.field select,.field textarea,.filter-group select,.notes-area,.model-picker select,
+    .preference-control select,.reader-paper-chat>select,.paper-chat-compose textarea,
+    .sort-row,.reader-mode-switch) {
+  border-radius:var(--radius-control)!important;
+}
+.paper-card .card-controls>.button { border-radius:1rem!important; }
+.card-context-menu button,.filter-menu-option {
+  border-radius:calc(var(--radius-menu) - .65rem)!important;
+}
+.sort-row button,.reader-mode-switch .button {
+  border-radius:calc(var(--radius-control) - .25rem)!important;
+}
+:is(.nav-count,.rank-badge,.journal-badge,.tag,.card-read-badge,.legend-swatch,
+    .search-box kbd,.theme-swatch:before,.theme-swatch:after,.block-overlay,
+    .translation-block.highlighted .translated-text,.reader-divider span) {
+  border-radius:var(--radius-xs)!important;
+}
+:is(.search-box,.theme-swatch,.gallery-item,.queue-image,.page-thumb,
+    .reader-dialog .page-control input,.reader-dialog .zoom-select,
+    .reader-dialog .reader-thumbs-toggle,.status-panel pre,.paper-drag-preview>img,
+    .crop-controls input,.paper-chat-citations .button) {
+  border-radius:var(--radius-sm)!important;
+}
+.paper-card .journal-badge { border-radius:0!important; }
+:is(.organize-section,.translation-status-line,.status-panel,.usage-panel,.usage-window,
+    .preference-preview,.metric-box,.queue-item,.bulkbar,.paper-drag-preview,
+    .import-progress,.toast,.form-note,.crop-preview,.paper-chat-message,
+    .selection-translation,.detail-cover) {
+  border-radius:var(--radius-surface)!important;
+}
+.reader-dialog .translation-block { border-radius:var(--radius-control)!important; }
+:is(.filter-menu,.card-context-menu) { border-radius:var(--radius-menu)!important; }
+:is(dialog,.reader-dialog,.drop-overlay) { border-radius:var(--radius-dialog)!important; }
+:is(.paper-card,.skeleton-card) { border-radius:var(--radius-card)!important; }
+.card-cover { border-radius:var(--radius-cover)!important; }
+:is(.card-cover-inner,.card-cover .cover-media,.card-cover img,.card-cover .paper-no-image) {
+  border-radius:inherit!important;
+  corner-shape:inherit;
+}
+
+/* Circle indicators and capsule tracks keep circular geometry. */
+:is(.icon-button,.card-save,.card-select,.status-dot,.collection-dot,.spinner,.rank-particles i) {
+  border-radius:50%!important;
+  corner-shape:round;
+}
+:is(.progress-track,.progress-fill,.connection-state) {
+  border-radius:999px!important;
+  corner-shape:round;
+}
+
+@supports (corner-shape:superellipse(1.45)) {
+  :is(.button,.nav-item,.filter-trigger,.filter-menu,.filter-menu-option,
+      .card-context-menu,.card-context-menu button,.settings-tabs [role="tab"],
+      .theme-choice,.theme-swatch,.library-footer .legend-tile,.field input,
+      .field select,.field textarea,.filter-group select,.notes-area,.model-picker select,
+      .preference-control select,.reader-paper-chat>select,.paper-chat-compose textarea,
+      .sort-row,.sort-row button,.reader-mode-switch,.reader-mode-switch .button,
+      .nav-count,.rank-badge,.journal-badge,.tag,.card-read-badge,.legend-swatch,
+      .search-box,.search-box kbd,.theme-swatch:before,.theme-swatch:after,
+      .gallery-item,.queue-image,.page-thumb,.block-overlay,
+      .translation-block.highlighted .translated-text,.reader-divider span,
+      .reader-dialog .page-control input,.reader-dialog .zoom-select,
+      .reader-dialog .reader-thumbs-toggle,.status-panel pre,.paper-drag-preview>img,
+      .crop-controls input,.paper-chat-citations .button,.organize-section,
+      .translation-status-line,.status-panel,.usage-panel,.usage-window,
+      .preference-preview,.metric-box,.queue-item,.bulkbar,.paper-drag-preview,
+      .import-progress,.toast,.form-note,.crop-preview,.paper-chat-message,
+      .selection-translation,.detail-cover,.reader-dialog .translation-block,
+      dialog,.reader-dialog,.drop-overlay,.paper-card,.skeleton-card,.card-cover) {
+    corner-shape:var(--continuous-corner);
+  }
+  .paper-card::before,.paper-card::after { corner-shape:inherit; }
+  /* Interactive icons inside other surfaces must remain circles. */
+  .icon-button,.card-save,.card-select { corner-shape:round; }
+}
+
+/* Light follows the outer silhouette. No inset frame or independent stroke. */
+.paper-card {
+  --paper-depth:0 10px 26px var(--glass-shadow,#1b2c1e16);
+  border-color:transparent!important;
+  box-shadow:0 0 1.5px .2px var(--edge-light-side),var(--paper-depth)!important;
+}
+.paper-card::after {
+  inset:0;
+  border:0;
+  opacity:1;
+  background:none;
+  box-shadow:inset 0 1px 1.4px var(--edge-light-top),
+             inset 1px 0 1.6px var(--edge-light-side),
+             inset 0 -1px 1.8px var(--edge-light-bottom),
+             inset -1px 0 1.8px var(--edge-light-side),
+             inset 0 0 4px .6px var(--edge-light-soft);
+}
+.paper-card:hover {
+  --paper-depth:0 14px 30px var(--glass-shadow,#1b2c1e16);
+}
+:root[data-theme="graphite"] .paper-card::after {
+  border:0;
+  box-shadow:inset 0 1px 1.4px var(--edge-light-top),
+             inset 1px 0 1.6px var(--edge-light-side),
+             inset 0 -1px 1.8px var(--edge-light-bottom),
+             inset -1px 0 1.8px var(--edge-light-side),
+             inset 0 0 4px .6px var(--edge-light-soft);
+}

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#285448">
+  <!-- Keep an invisible title so the browser app window does not fall back to showing its URL. -->
+  <title>&#8203;</title>
+  <!-- The browser owns the real taskbar icon; only the native caption is hidden. -->
+  <link rel="icon" type="image/png" href="/static/ezread-icon.png?v=20261005-taskbar2">
+  <link rel="shortcut icon" type="image/x-icon" href="/static/ezread.ico?v=20261005-taskbar2">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/preferences.css">
+  <link rel="stylesheet" href="/static/reader.css">
+  <link rel="stylesheet" href="/static/redesign.css">
+  <link rel="stylesheet" href="/static/surfaces.css?v=20261005">
+  <script src="/static/reader.js" defer></script>
+  <script src="/static/paper-chat.js" defer></script>
+  <script src="/static/translation-ui.js" defer></script>
+  <script src="/static/settings-ui.js" defer></script>
+  <script src="/static/core/state.js" defer></script>
+  <script src="/static/core/dom.js" defer></script>
+  <script src="/static/core/format.js" defer></script>
+  <script src="/static/core/preferences.js" defer></script>
+  <script src="/static/core/api.js" defer></script>
+  <script src="/static/library/actions.js" defer></script>
+  <script src="/static/library/filters.js" defer></script>
+  <script src="/static/library/cards.js" defer></script>
+  <script src="/static/library/import.js" defer></script>
+  <script src="/static/detail/paper.js" defer></script>
+  <script src="/static/detail/actions.js" defer></script>
+  <script src="/static/tasks/status.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></symbol>
+    <symbol id="i-select" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m7 12 3 3 7-7"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.5a8 8 0 0 1-8 8 8.8 8.8 0 0 1-3.6-.8L4 20l1.3-4.4A8 8 0 1 1 20 11.5Z"/><path d="M8 11.5h8"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5.5C8 2 3 4 3 4v15s5-2 9 1.5C16 17 21 19 21 19V4s-5-2-9 1.5Zm0 0v15"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.7" cy="10.7" r="6.7"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-.7 2.2-2 .9L4 5.5 2 9l1.6 1.7v2.6L2 15l2 3.5 2.3-.6 2 .9L9 21h6l.7-2.2 2-.9 2.3.6 2-3.5-1.6-1.7v-2.6L22 9l-2-3.5-2.3.6-2-.9L15 3Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-translate" viewBox="0 0 24 24"><path d="M3 5h12M9 3v2m3 0c-1 7-4 10-9 12m2-9c1.5 4 4 7 8 9m1 4 4-11 4 11m-6.7-4h5.4"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="m14 5 5 5M4 20l5-1L21 7l-5-5L4 14v6Z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8Zm0 0v5h5M8 12h8m-8 4h6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H4v13h4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2m3 6a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2"/></symbol>
+  </defs></svg>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="侧边栏">
+      <div class="brand"><img class="brand-icon" width="40" height="40" src="/static/ezread-icon.png" alt=""><span>EzRead</span></div>
+      <div class="sidebar-scroll">
+      <label class="search-box"><svg class="icon"><use href="#i-search"/></svg><input id="search" type="search" autocomplete="off" placeholder="搜索论文…" aria-label="搜索论文"><kbd>Ctrl K</kbd></label>
+      <div class="library-tools" id="library-tools">
+        <h2 class="nav-heading">筛选</h2>
+        <div class="filter-group" role="group" aria-label="筛选条件">
+          <nav id="main-nav" aria-label="文献类型">
+            <button class="nav-item active" data-view="all"><svg class="icon"><use href="#i-grid"/></svg>全部论文<span id="nav-count" class="nav-count">0</span></button>
+            <button class="nav-item" data-filter-type="journal"><svg class="icon"><use href="#i-book"/></svg>期刊论文</button>
+            <div class="nav-tertiary" aria-label="期刊论文筛选">
+              <button type="button" class="filter-trigger" data-select="filter-journal" aria-label="筛选出版来源：所有出版来源" aria-controls="filter-menu" aria-expanded="false"><span>出版来源</span><span class="filter-chevron" aria-hidden="true"></span></button><select id="filter-journal" aria-label="筛选出版来源" hidden><option value="">所有出版来源</option></select>
+              <button type="button" class="filter-trigger" data-select="filter-tier" aria-label="筛选期刊等级：全部等级" aria-controls="filter-menu" aria-expanded="false"><span>期刊等级</span><span class="filter-chevron" aria-hidden="true"></span></button><select id="filter-tier" aria-label="筛选期刊等级" hidden><option value="">全部等级</option><option value="top">顶级</option><option value="important">重要</option><option value="other">其他</option></select>
+            </div>
+            <button class="nav-item" data-filter-type="conference"><svg class="icon"><use href="#i-file"/></svg>会议论文</button>
+            <button class="nav-item" data-filter-type="preprint"><svg class="icon"><use href="#i-file"/></svg>预印本</button>
+          </nav>
+          <select id="filter-type" aria-label="筛选文献类型" hidden><option value="">全部论文</option><option value="journal">期刊论文</option><option value="conference">会议论文</option><option value="preprint">预印本</option></select>
+          <button id="clear-filters" class="text-button hidden">清除筛选</button>
+        </div>
+        <h2 class="nav-heading sort-heading">排序</h2>
+        <div class="sidebar-sort" role="group" aria-label="论文排序">
+          <div class="sort-row"><span>导入时间</span><button type="button" data-sort-key="imported" data-sort-direction="desc" title="最近导入的论文排在前面">最新导入</button><button type="button" data-sort-key="imported" data-sort-direction="asc" title="最早导入的论文排在前面">最早导入</button></div>
+          <div class="sort-row"><span>发表时间</span><button type="button" data-sort-key="year" data-sort-direction="desc" title="发表年份较新的论文排在前面；缺少年份的放在末尾">最新发表</button><button type="button" data-sort-key="year" data-sort-direction="asc" title="发表年份较早的论文排在前面；缺少年份的放在末尾">最早发表</button></div>
+          <div class="sort-row"><span>最近阅读</span><button type="button" data-sort-key="recent" data-sort-direction="desc" title="最后一次阅读时间较近的论文排在前面；没有阅读记录的放在末尾">最近读过</button><button type="button" data-sort-key="recent" data-sort-direction="asc" title="距离上次阅读最久的论文排在前面；没有阅读记录的放在末尾">最久未读</button></div>
+          <select id="sort" aria-label="论文排序" hidden><option value="recent">最近阅读</option><option value="imported">导入时间</option><option value="year">发表时间</option></select>
+          <input id="sort-direction" type="hidden" value="desc">
+        </div>
+      </div>
+      <button id="import-top" class="button secondary sidebar-action" title="导入 PDF" aria-label="导入 PDF"><svg class="icon"><use href="#i-upload"/></svg><span>导入 PDF</span></button>
+      <div class="nav-heading collection-heading"><span>主要合集</span><button id="new-collection" class="icon-button" title="添加主要合集" aria-label="添加主要合集"><svg class="icon"><use href="#i-plus"/></svg></button></div>
+      <p class="collection-drag-hint">可将论文卡片拖入合集</p>
+      <button class="nav-item" data-view="favorites"><svg class="icon"><use href="#i-star"/></svg>我的收藏</button>
+      <div id="collections-nav" class="collections-nav"></div>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-view="queue" aria-haspopup="dialog" aria-controls="queue-dialog" aria-expanded="false"><svg class="icon"><use href="#i-translate"/></svg>翻译任务<span id="queue-count" class="nav-count hidden">0</span></button>
+        <button class="nav-item" id="settings-button"><svg class="icon"><use href="#i-settings"/></svg>设置</button>
+      </div>
+    </aside>
+    <main class="workspace">
+      <section class="library-view" id="library-view" aria-label="全部论文">
+        <span class="sr-only" id="result-count" role="status">正在打开文献库…</span>
+        <div id="active-collection" class="collection-banner hidden"></div>
+        <div class="bulkbar hidden" id="bulkbar" role="toolbar" aria-label="多选操作"></div>
+        <div id="paper-grid" class="paper-grid" aria-live="polite"></div>
+        <div id="empty-state" class="empty-state hidden"><div class="empty-illustration"><div class="empty-paper back"></div><div class="empty-paper front"><svg class="icon"><use href="#i-image"/></svg><i></i><i></i></div><span>+</span></div><h2>文献库为空</h2><p>拖入 PDF，或在左侧点击导入 PDF。</p></div>
+        <footer class="library-footer" aria-label="期刊等级颜色图例"><div class="if-legend" id="if-legend" title="按 2025 年固定名单显示期刊等级"></div></footer>
+      </section>
+    </main>
+  </div>
+  <dialog id="queue-dialog" class="queue-dialog" aria-labelledby="queue-dialog-title">
+    <header class="queue-dialog-heading"><div><h2 id="queue-dialog-title">翻译任务</h2><p>查看进度，暂停或继续翻译。</p></div><div class="queue-dialog-actions"><button id="refresh-status" class="button secondary">刷新状态</button><button id="queue-close" class="icon-button" aria-label="关闭翻译任务" autofocus><svg class="icon"><use href="#i-close"/></svg></button></div></header>
+    <div id="queue-view" class="queue-dialog-scroll"><div id="codex-status" class="status-panel"></div><div id="usage-status" class="usage-panel"></div><div id="queue-list"></div></div>
+  </dialog>
+  <div id="filter-backdrop" class="filter-backdrop hidden" aria-hidden="true"></div>
+  <section id="filter-menu" class="filter-menu hidden" role="region" aria-labelledby="filter-menu-title">
+    <div class="filter-menu-inner"><div class="filter-menu-heading"><span id="filter-menu-title"></span><button type="button" id="filter-menu-close" class="icon-button" aria-label="关闭筛选选项"><svg class="icon"><use href="#i-close"/></svg></button></div><div id="filter-menu-options" class="filter-menu-options"></div></div>
+  </section>
+  <input type="file" id="file-input" multiple accept=".pdf,application/pdf" hidden>
+  <div id="card-context-menu" class="card-context-menu hidden" role="menu" aria-label="论文操作"></div>
+  <div class="drop-overlay hidden" id="drop-overlay"><div><svg class="icon"><use href="#i-upload"/></svg><h2>松开鼠标导入 PDF</h2><p>可一次导入多篇论文</p></div></div>
+  <div class="import-progress hidden" id="import-progress"><span class="spinner"></span><div><strong id="import-progress-title">正在导入论文</strong><small>提取文字与图片，生成你的文献卡片…</small></div></div>
+  <dialog id="detail-dialog" class="detail-dialog"><div id="detail-content"></div></dialog>
+  <dialog id="reader-dialog" class="reader-dialog"><div id="reader-content"></div></dialog>
+  <dialog id="edit-dialog" class="form-dialog"><div id="edit-content"></div></dialog>
+  <dialog id="crop-dialog" class="crop-dialog"><div id="crop-content"></div></dialog>
+  <dialog id="settings-dialog" class="form-dialog"><div id="settings-content"></div></dialog>
+  <dialog id="move-collection-dialog" class="form-dialog small-dialog"><div id="move-collection-content"></div></dialog>
+  <dialog id="translation-dialog" class="form-dialog"><div id="translation-content"></div></dialog>
+  <dialog id="collection-dialog" class="form-dialog small-dialog"><form id="collection-form"><div class="dialog-heading"><div><h2>新建主题集合</h2></div><button type="button" class="icon-button" data-close="collection-dialog" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button></div><label class="field">集合名称<input id="collection-name" maxlength="80" required placeholder="例如：触觉夹爪"></label><p class="muted small">可将论文卡片拖入合集，或使用多选栏的“移入合集”。</p><div class="form-actions"><button type="button" class="button secondary" data-close="collection-dialog">取消</button><button class="button primary" type="submit">创建集合</button></div></form></dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>
