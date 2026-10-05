@@ -57,7 +57,7 @@ function installEvents() {
   }));
   $$("[data-sort-key]").forEach(node => node.addEventListener("click", () => {
     $("#sort").value = node.dataset.sortKey; $("#sort-direction").value = node.dataset.sortDirection;
-    try { localStorage.setItem("readx-sort", $("#sort").value); localStorage.setItem("ezread-sort-direction", $("#sort-direction").value); } catch {}
+    writeBrowserSetting("sort", $("#sort").value); writeBrowserSetting("direction", $("#sort-direction").value);
     renderLibrary();
   }));
   $("#clear-filters").addEventListener("click", clearFilters);
@@ -97,8 +97,8 @@ function installEvents() {
   document.addEventListener("visibilitychange", () => { document.documentElement.dataset.pageHidden = String(document.hidden); if (!document.hidden) poll(); });
 }
 async function init() {
-  try { const cached = JSON.parse(localStorage.getItem("readx-preferences") || "null"); if (cached && typeof cached === "object") for (const key of Object.keys(DEFAULT_PREFERENCES)) if (Object.hasOwn(cached, key)) state.settings[key] = cached[key]; } catch {}
-  applyPreferences(); installEvents(); try { const sort = localStorage.getItem("readx-sort") || localStorage.getItem("tudu-sort"); if (["recent", "imported", "year"].includes(sort)) $("#sort").value = sort; const direction = localStorage.getItem("ezread-sort-direction"); if (["asc", "desc"].includes(direction)) $("#sort-direction").value = direction; } catch {}
+  try { const cached = JSON.parse(readBrowserSetting("preferences") || "null"); if (cached && typeof cached === "object") for (const key of Object.keys(DEFAULT_PREFERENCES)) if (Object.hasOwn(cached, key)) state.settings[key] = cached[key]; } catch {}
+  applyPreferences(); installEvents(); const sort = readBrowserSetting("sort"), direction = readBrowserSetting("direction"); if (sort) $("#sort").value = sort; if (direction) $("#sort-direction").value = direction;
   renderLibrary();
   api("/api/status").then(value => { state.status = value; if (value.usage) state.usage = value.usage; if ($("#queue-dialog").open) renderQueue(); $("#settings-codex-status")?.replaceChildren(codexStatusPanel()); renderUsagePanels(); }).catch(error => { state.status = { ...(state.status || {}), codex: { available: null, authenticated: null, message: `连接状态查询失败：${error.message}` } }; if ($("#queue-dialog").open) renderQueue(); $("#settings-codex-status")?.replaceChildren(codexStatusPanel()); });
   loadUsage(false);

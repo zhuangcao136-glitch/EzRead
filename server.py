@@ -4,13 +4,13 @@ Feature logic lives in ezread/; keep startup and shared runtime state here.
 """
 from __future__ import annotations
 import argparse
-import os
 import queue
 import sys
 import threading
 import webbrowser
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from ezread.config import VERSION, data_directory as _data_directory
 from ezread import (
     storage as _storage,
     preferences as _preferences,
@@ -24,11 +24,10 @@ from ezread import (
 )
 
 ROOT = Path(__file__).resolve().parent
-DATA = Path(os.environ.get('TUDU_DATA_DIR', str(ROOT / 'data'))).resolve()
+DATA = _data_directory(ROOT)
 LIBRARY = DATA / 'library'
 STATIC = ROOT / 'static'
 PORT = 47831
-VERSION = '3.3.0'
 LOCK = threading.RLock()
 FILE_ACTION_LOCK = threading.Lock()
 JOBS = queue.Queue()

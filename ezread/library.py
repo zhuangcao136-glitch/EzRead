@@ -1,6 +1,7 @@
 """Paper metadata, public documents and native file actions."""
 from __future__ import annotations
 from .context import ApplicationContext
+from .config import VERSION
 import json
 import re
 import shutil
@@ -61,7 +62,7 @@ def crossref_metadata(doi):
         return {}
     url = 'https://api.crossref.org/works/' + urllib.parse.quote(doi, safe='')
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'EzRead/2.0 (personal desktop reference library)'})
+        req = urllib.request.Request(url, headers={'User-Agent': f'EzRead/{VERSION} (personal desktop reference library)'})
         with urllib.request.urlopen(req, timeout=7) as response:
             item = json.load(response)['message']
         authors = [' '.join(filter(None, [a.get('given'), a.get('family')])) for a in item.get('author', [])]

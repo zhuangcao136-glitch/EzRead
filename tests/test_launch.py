@@ -19,6 +19,7 @@ class LauncherTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {}, clear=False)
         self.environment.start()
         os.environ.pop('TUDU_DATA_DIR', None)
+        os.environ.pop('EZREAD_DATA_DIR', None)
 
     def tearDown(self):
         self.environment.stop()
@@ -38,7 +39,7 @@ class LauncherTests(unittest.TestCase):
                 launch.running()
 
     def test_respects_relative_override_from_server_working_directory(self):
-        os.environ['TUDU_DATA_DIR'] = 'work/isolated'
+        os.environ['EZREAD_DATA_DIR'] = 'work/isolated'
         expected = (ROOT / 'work/isolated').resolve()
         self.assertEqual(launch.data_directory(), expected)
         with patch.object(launch, '_read_status', return_value={'app_root': str(ROOT), 'data_dir': str(expected)}):

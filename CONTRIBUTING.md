@@ -16,7 +16,7 @@ python scripts/check.py
 运行测试使用独立临时库。手动启动开发实例也应明确指定文献目录与空闲端口，例如：
 
 ```powershell
-$env:TUDU_DATA_DIR = Join-Path (Get-Location) 'work\dev-data'
+$env:EZREAD_DATA_DIR = Join-Path (Get-Location) 'work\dev-data'
 python server.py --port 47832 --open
 ```
 

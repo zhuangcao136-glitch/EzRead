@@ -9,16 +9,14 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from ezread.config import data_directory as configured_data_directory
 
 ROOT = Path(__file__).resolve().parent
 URL = 'http://127.0.0.1:47831'
 
 
 def data_directory():
-    directory = Path(os.environ.get('TUDU_DATA_DIR', str(ROOT / 'data')))
-    if not directory.is_absolute():
-        directory = ROOT / directory
-    return directory.resolve()
+    return configured_data_directory(ROOT)
 
 
 def _same_path(value, expected):

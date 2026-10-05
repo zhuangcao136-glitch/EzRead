@@ -23,7 +23,7 @@ class StartupTests(unittest.TestCase):
             with socket.socket() as reservation:
                 reservation.bind(('127.0.0.1', 0))
                 port = reservation.getsockname()[1]
-            env = {**os.environ, 'TUDU_DATA_DIR': str(data)}
+            env = {**os.environ, 'EZREAD_DATA_DIR': str(data)}
             with open(Path(temp) / 'server.log', 'w', encoding='utf-8') as log:
                 process = subprocess.Popen([sys.executable, str(ROOT / 'server.py'), '--port', str(port)],
                     cwd=ROOT, env=env, stdout=log, stderr=log,
@@ -50,6 +50,7 @@ class StartupTests(unittest.TestCase):
                     scripts = re.findall(r'<script src="([^"]+)" defer></script>', index)
                     self.assertEqual(scripts[-1], '/static/app.js')
                     self.assertIn('/static/core/state.js', scripts)
+                    self.assertIn('/static/core/storage.js', scripts)
                     self.assertIn('/static/library/cards.js', scripts)
                     for script in scripts:
                         with urllib.request.urlopen(base + script, timeout=2) as response:

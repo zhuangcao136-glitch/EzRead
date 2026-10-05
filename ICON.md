@@ -1,15 +1,15 @@
 # EzRead 图标
 
-采用用户确认的第三款候选：墨绿展开书本。图标以暖白书页、中央细金色书签和墨绿圆角底表达科研阅读，采用克制的材质与柔和立体光影。
+采用已确认的墨绿展开书本设计。图标以暖白书页、中央细金色书签和墨绿圆角底表达科研阅读，采用克制的材质与柔和立体光影。
 
 原始生成工具：内置 image_gen.imagegen，2026-09-30。此次品牌切换复用已确认源图，不重新生成设计。
 
 文件：
 
-- 候选源图：`assets/branding/ezread-icon-v3-book.png`。
+- 源图：`assets/branding/ezread-book.png`。
 - 应用 PNG：`static/ezread-icon.png`。
-- Windows 多尺寸 ICO：`static/ezread.ico`。所有尺寸采用所选图标的墨绿书本、暖白书页和金色书签轮廓，使用适合任务栏的纯色版本，避免 Windows 选择较大但柔和的原图再缩放。网页另提供 32、64 像素 PNG。运行 `python assets/branding/build_windows_icon.py` 可重建；应用内展示仍使用已确认的原始图像。
-- 完整候选提示词记录：`assets/branding/ezread-icon-v2-v4-prompts.txt`。
+- Windows 多尺寸 ICO：`static/ezread.ico`。所有尺寸采用所选图标的墨绿书本、暖白书页和金色书签轮廓，使用适合任务栏的纯色版本，避免 Windows 选择较大但柔和的原图再缩放。运行 `python assets/branding/build_windows_icon.py` 可重建；应用内展示仍使用已确认的原始图像。
+- 标题栏辅助 ICO：`static/window-icon-transparent.ico`，仅供原生小图标隐藏；网页 favicon 与任务栏仍使用真实书本图标。
 
 提示词：
 

@@ -7,7 +7,7 @@ function applyPreferences() {
   root.style.setProperty("--reader-font", FONT_FAMILIES[p.reader_font] || FONT_FAMILIES.system);
   root.style.setProperty("--ui-font-size", `${Math.max(14, Math.min(22, Number(p.ui_font_size) || 16))}px`);
   root.style.setProperty("--reader-font-size", `${Math.max(14, Math.min(28, Number(p.reader_font_size) || 18))}px`);
-  try { localStorage.setItem("readx-preferences", JSON.stringify(p)); } catch {}
+  writeBrowserSetting("preferences", JSON.stringify(p));
   syncPreferenceControls();
   if (typeof applyReaderPreferences === "function") applyReaderPreferences();
 }

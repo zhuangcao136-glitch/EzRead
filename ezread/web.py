@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler
 
 def handler_for(app: ApplicationContext):
     class Handler(BaseHTTPRequestHandler):
-        server_version = 'EzRead/2.0'
+        server_version = f'EzRead/{app.VERSION}'
 
         def log_message(self, fmt, *args):
             if '/api/status' not in str(args) and '/api/papers' not in str(args):

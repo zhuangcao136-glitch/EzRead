@@ -1,4 +1,4 @@
-"""Local PDF ingestion for TuDu. No network access or model calls.
+"""Local PDF ingestion for EzRead. No network access or model calls.
 
 Coordinates are normalized, top-left origin; page numbers are one-based.
 PDF text/layout extraction is heuristic. The untouched PDF always remains the

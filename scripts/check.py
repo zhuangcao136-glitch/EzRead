@@ -23,7 +23,7 @@ def main():
     run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-v'])
     for path in sorted((ROOT / 'static').rglob('*.js')):
         run([node, '--check', str(path)])
-    for name in ('test_reader.js', 'test_detail_notes.js', 'test_library_cards.js'):
+    for name in ('test_reader.js', 'test_detail_notes.js', 'test_library_cards.js', 'test_browser_storage.js'):
         run([node, str(ROOT / 'tests' / name)])
     print('All offline checks passed. No real model inference was performed.')
 

@@ -48,8 +48,6 @@ def main():
         stream = BytesIO()
         icon.save(stream, format="PNG")
         encoded.append(stream.getvalue())
-        if size in (32, 64):
-            icon.save(STATIC / f"ezread-favicon-{size}.png")
 
     # PNG-compressed ICO entries preserve the exact hand-tuned small images.
     header = struct.pack("<HHH", 0, 1, len(SIZES))
