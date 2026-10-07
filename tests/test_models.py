@@ -1,5 +1,6 @@
 """Offline model discovery tests: no login, credentials, or inference required."""
 import copy
+import io
 import json
 import queue
 import threading
@@ -8,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import codex_models as models
+import codex_usage as usage
 
 
 def entry(slug='test-model', *, default=True, efforts=('low', 'high'), default_effort='low'):
@@ -125,7 +127,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(len(result['models']), 2)
         command = popen.call_args.args[0]
         self.assertIn('forced_login_method="chatgpt"', command)
-        self.assertEqual(popen.call_args.kwargs['stderr'], models.subprocess.DEVNULL)
+        self.assertEqual(popen.call_args.kwargs['stderr'], models.subprocess.PIPE)
         self.assertNotIn(fake, models._processes)
 
     def test_empty_intermediate_page_and_cursor_loop(self):
@@ -144,6 +146,20 @@ class ModelTests(unittest.TestCase):
                 models._query()
         self.assertEqual(caught.exception.code, 'unsupported')
         self.assertNotIn(secret, str(caught.exception))
+
+    def test_early_exit_identifies_permission_failure_without_exposing_stderr(self):
+        for module, error_type in ((models, models.ModelError), (usage, usage.UsageError)):
+            fake = FakeProcess([])
+            fake.stdout = io.StringIO('')
+            fake.stderr = io.StringIO('secret-diagnostic-path: access is denied (os error 5)\n')
+            fake.write = lambda line: None
+            with self.subTest(module=module.__name__), \
+                    patch.object(models.codex_bridge, '_cli', return_value='official-codex'), \
+                    patch.object(module.subprocess, 'Popen', return_value=fake):
+                with self.assertRaises(error_type) as caught:
+                    module._query(timeout=1)
+                self.assertEqual(caught.exception.code, 'permissions')
+                self.assertNotIn('secret-diagnostic-path', str(caught.exception))
 
     def test_get_does_not_wait_and_refresh_is_single_flight(self):
         started, release = threading.Event(), threading.Event()

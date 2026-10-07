@@ -22,7 +22,7 @@ async function deletePapers(ids) {
     catch (error) { toast(`${id}：${error.message}`, "error"); }
   }
   await loadLibrary();
-  if (removed) toast(`已将 ${removed} 篇论文移入回收站，可在设置 → 文献与备份中恢复`);
+  if (removed) toast(`已将 ${removed} 篇论文移入回收站`);
 }
 function closeCardMenu(restoreFocus = false) {
   const id = activeCardMenuId; activeCardMenuId = null;
@@ -37,16 +37,16 @@ function cancelPaperSelection() {
 }
 async function paperFileAction(id, action) {
   const result = await api(`/api/papers/${encodeURIComponent(id)}/${action}`, { method: "POST", body: {} });
-  toast(action === "copy-pdf" ? `已复制 PDF 文件「${result.filename}」。可用 Ctrl+V 粘贴到文件夹或支持文件粘贴的聊天窗口。` : "已在文件夹中选中原 PDF", "success", 6500);
+  toast(action === "copy-pdf" ? `已复制 PDF 文件「${result.filename}」` : "已在文件夹中选中原 PDF", "success", 6500);
 }
 function openCardMenu(p, x, y) {
   closeFilterMenu(); closeCardMenu(); activeCardMenuId = p.id;
   const menu = $("#card-context-menu");
-  const item = (label, iconName, action, hint = "") => el("button", { type: "button", role: "menuitem", onclick: () => { closeCardMenu(); action(); } },
-    icon(iconName), el("span", {}, el("span", { class: "context-menu-label" }, label), hint ? el("small", {}, hint) : null));
+  const item = (label, iconName, action) => el("button", { type: "button", role: "menuitem", onclick: () => { closeCardMenu(); action(); } },
+    icon(iconName), el("span", {}, el("span", { class: "context-menu-label" }, label)));
   menu.replaceChildren(
     item("多选", "select", () => beginPaperSelection(p.id)),
-    item("复制 PDF", "copy", () => void act(() => paperFileAction(p.id, "copy-pdf")), "复制文件到剪贴板，可用 Ctrl+V 粘贴"),
+    item("复制 PDF", "copy", () => void act(() => paperFileAction(p.id, "copy-pdf"))),
     item("在文件夹显示", "folder", () => void act(() => paperFileAction(p.id, "reveal-pdf")))
   );
   menu.classList.remove("hidden");
@@ -60,7 +60,7 @@ function openMovePapers(ids) {
   $("#move-collection-content").replaceChildren(
     el("div", { class: "dialog-heading" }, el("h2", {}, "移入合集"), iconButton("close", "关闭移入合集", () => closeDialog("#move-collection-dialog"))),
     el("p", { class: "small muted" }, `已选择 ${ids.length} 篇论文`),
-    names.length ? field("目标合集", select) : el("p", {}, "请先点击主要合集旁的 ＋ 创建合集。"),
+    names.length ? field("目标合集", select) : el("p", {}, "暂无可用合集"),
     el("div", { class: "form-actions" }, button("取消", () => closeDialog("#move-collection-dialog"), "secondary"),
       button("确认移入", event => void act(async () => { await movePapers(ids, select.value); closeDialog("#move-collection-dialog"); }, event.currentTarget), "primary", "folder", { disabled: !names.length }))
   );

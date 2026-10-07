@@ -105,6 +105,48 @@ async function main() {
   handlers.keydown({ key: "ArrowRight", shiftKey: false, preventDefault() {} }); assert.equal(context.testSplitValue, .52);
   handlers.keydown({ key: "Home", shiftKey: false, preventDefault() {} }); assert.equal(context.testSplitValue, .3);
   handlers.keydown({ key: "Enter", shiftKey: false, preventDefault() {} }); assert.equal(context.testSplitValue, .5);
-  console.log("Reader behavior checks passed: anchors, offset persistence, offline drafts, concurrent notes, safe close, keyboard split.");
+
+  dialog.open = true;
+  const wheelHandlers = {}, widths = [], fontWrites = [];
+  const zoomSelect = { value: "fit" }; nodes.set("#reader-zoom", zoomSelect);
+  original.style = { setProperty(name, value) { widths.push(value); } };
+  original.addEventListener = (name, handler, options) => { if (name === "wheel") { wheelHandlers.pdf = handler; assert.equal(options.passive, false); } };
+  translated.addEventListener = (name, handler, options) => { if (name === "wheel") { wheelHandlers.text = handler; assert.equal(options.passive, false); } };
+  R.originalSignature = JSON.stringify([state.reader.id, state.reader.pages.map(p => [p.number, p.width, p.height, p.image_url]), state.reader.blocks.map(b => [b.id, b.page, b.bbox])]);
+  context.changePreference = patch => { fontWrites.push(patch); Object.assign(state.settings, patch); context.applyReaderPreferences(); };
+  let selectSyncs = 0; context.syncSelectMenus = () => { selectSyncs++; };
+  context.readerBindScrolling();
+  function wheel(side, deltaY, ctrlKey = true, cancelable = true) {
+    const event = { deltaY, ctrlKey, cancelable, prevented: false, preventDefault() { this.prevented = true; } };
+    wheelHandlers[side](event); return event;
+  }
+  state.zoom = "fit"; state.settings.reader_font_size = 18; state.settings.ui_font_size = 16;
+  R.suppressLeftUntil = 1234;
+  assert.equal(wheel("pdf", 120, false).prevented, false);
+  assert.equal(state.zoom, "fit"); assert.equal(R.suppressLeftUntil, 0, "Ordinary scrolling must still release synchronization suppression.");
+  assert.equal(wheel("pdf", 0).prevented, false);
+  assert.equal(wheel("pdf", -120, true, false).prevented, false); assert.equal(state.zoom, "fit");
+  assert.equal(wheel("pdf", -120).prevented, true); assert.equal(state.zoom, 125);
+  assert.equal(zoomSelect.value, "125"); assert.ok(selectSyncs > 0); assert.equal(widths.at(-1), "575px");
+  assert.equal(JSON.parse(storage.get("ezread-reader-position:paper1")).position.zoom, 125);
+  assert.equal(original.last.top, 700, "PDF zoom must retain the current page anchor.");
+  assert.equal(wheel("pdf", 120).prevented, true); assert.equal(state.zoom, 100);
+  state.zoom = "fit"; wheel("pdf", 120); assert.equal(state.zoom, 75);
+  const draws = widths.length; assert.equal(wheel("pdf", 120).prevented, true); assert.equal(widths.length, draws);
+  state.zoom = 200; assert.equal(wheel("pdf", -120).prevented, true); assert.equal(state.zoom, 200);
+  context.readerSetZoom("150"); assert.equal(state.zoom, 150); assert.equal(zoomSelect.value, "150");
+  context.readerSetZoom(999); assert.equal(state.zoom, 150);
+
+  assert.equal(wheel("text", -120).prevented, true); assert.equal(state.settings.reader_font_size, 19);
+  assert.equal(state.zoom, 150); assert.equal(state.settings.ui_font_size, 16);
+  assert.equal(R.translationAnchor.key, "b2"); assert.equal(translated.last.top, 300);
+  wheel("text", 120); assert.equal(state.settings.reader_font_size, 18);
+  wheel("text", -120, false); assert.equal(state.settings.reader_font_size, 18);
+  state.settings.reader_font_size = 28; const saves = fontWrites.length;
+  assert.equal(wheel("text", -120).prevented, true); assert.equal(fontWrites.length, saves);
+  state.settings.reader_font_size = 14; assert.equal(wheel("text", 120).prevented, true); assert.equal(fontWrites.length, saves);
+  dialog.open = false; assert.equal(wheel("pdf", 120).prevented, false); assert.equal(wheel("text", -120).prevented, false);
+  assert.equal(state.zoom, 150); assert.equal(state.settings.reader_font_size, 14);
+  console.log("Reader behavior checks passed: anchors, offset persistence, offline drafts, concurrent notes, safe close, keyboard split, Ctrl+wheel PDF/text zoom.");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

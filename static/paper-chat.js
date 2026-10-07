@@ -26,9 +26,9 @@ function renderPaperChat() {
   version.value = String(data.generation);
   const history = el("div", { class: "paper-chat-history", id: "paper-chat-history" },
     data.messages.length ? data.messages.map(paperChatMessage) :
-      el("p", { class: "paper-chat-empty" }, "围绕这篇论文提问。回答会标明原文位置，历史记录保存在本地。"));
+      el("p", { class: "paper-chat-empty" }, "暂无对话"));
   const input = el("textarea", { id: "paper-chat-input", rows: "3", maxlength: "4000",
-    placeholder: current ? "询问方法、实验、结论或局限…" : "这是旧版对话，只供回看。",
+    placeholder: current ? "向论文提问" : "历史对话",
     disabled: !current || busy,
     "aria-label": "向论文提问" });
   input.addEventListener("keydown", event => {
@@ -42,12 +42,10 @@ function renderPaperChat() {
   pane.replaceChildren(el("div", { class: "paper-chat-heading" },
       el("strong", {}, "论文对话"), threadLink,
       iconButton("close", "收起论文对话", () => closePaperChat())),
-    el("p", { class: "paper-chat-grounding" }, "默认只依据这篇论文、已保存译文和笔记回答。"),
     version, history,
     current ? el("div", { class: "paper-chat-compose" }, input,
       button(busy ? "正在回答…" : "发送", () => void sendPaperChat(), "primary", "", {
-        disabled: busy }),
-      el("span", { class: "small muted" }, "Ctrl + Enter 发送")) : null);
+        disabled: busy })) : null);
   history.scrollTop = history.scrollHeight;
 }
 

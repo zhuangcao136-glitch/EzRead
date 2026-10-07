@@ -13,8 +13,7 @@ def validate_settings(app: ApplicationContext, data):
     if not isinstance(data, dict):
         raise ValueError('设置必须是对象。')
     data = {k: v for k, v in data.items() if k in app.DEFAULT_SETTINGS}
-    choices = {'theme': ('paper', 'cream', 'sage', 'graphite'), 'ui_font': ('system', 'sans', 'serif'),
-               'reader_font': ('system', 'sans', 'serif')}
+    choices = {'theme': ('paper', 'cream', 'sage', 'graphite')}
     for key, values in choices.items():
         if key in data and data[key] not in values:
             raise ValueError(key + ' 选项无效。')
@@ -33,12 +32,14 @@ def validate_settings(app: ApplicationContext, data):
         if combined['translation_model'] or combined['translation_reasoning_effort']:
             import codex_models
             codex_models.resolve_config(combined['translation_model'], combined['translation_reasoning_effort'])
-    if 'selection_translation_model' in data:
-        if not isinstance(data['selection_translation_model'], str) or len(data['selection_translation_model']) > 160:
-            raise ValueError('划线翻译模型无效。')
-        if data['selection_translation_model']:
+    if {'selection_translation_model', 'selection_translation_reasoning_effort'} & data.keys():
+        combined = {**app.settings(), **data}
+        for key in ('selection_translation_model', 'selection_translation_reasoning_effort'):
+            if not isinstance(combined[key], str) or len(combined[key]) > 160:
+                raise ValueError('划线翻译模型与推理强度必须是有效文字选项。')
+        if combined['selection_translation_model'] or combined['selection_translation_reasoning_effort']:
             import codex_models
-            codex_models.resolve_config(data['selection_translation_model'])
+            codex_models.resolve_config(combined['selection_translation_model'], combined['selection_translation_reasoning_effort'])
     if 'sort' in data and (not isinstance(data['sort'], str) or len(data['sort']) > 40):
         raise ValueError('排序设置无效。')
     if 'collections' in data and (not isinstance(data['collections'], list) or len(data['collections']) > 1000 or any(not isinstance(x, str) or not x.strip() or len(x) > 100 for x in data['collections'])):

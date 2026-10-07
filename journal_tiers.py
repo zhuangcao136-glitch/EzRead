@@ -35,34 +35,37 @@ def _issn(value):
 
 @lru_cache(maxsize=1)
 def _catalogue():
+    return catalogue_index(catalogue_rows())
+
+
+def catalogue_index(rows):
+    """Validate journal identities and build exact-match indexes."""
     by_name, by_issn = {}, {}
-    with CATALOGUE.open(encoding='utf-8-sig', newline='') as handle:
-        for row in csv.DictReader(handle):
-            if row['tier'] not in ('top', 'important') or not row['name'].strip():
-                raise ValueError('期刊等级名单含有无效记录。')
-            issn = _issn(row['issn'])
-            if not re.fullmatch(r'[0-9]{7}[0-9X]', issn):
-                raise ValueError(f"期刊 ISSN 无效：{row['name']}")
-            checksum = sum((8 - i) * int(char) for i, char in enumerate(issn[:7]))
-            checksum += 10 if issn[-1] == 'X' else int(issn[-1])
-            if checksum % 11:
-                raise ValueError(f"期刊 ISSN 校验失败：{row['name']}")
-            previous = by_issn.get(issn)
-            if previous:
-                raise ValueError(f"期刊 ISSN 重复：{row['issn']}")
-            for name in (row['name'], *(row['aliases'] or '').split(';')):
-                key = _key(name)
-                if not key:
-                    continue
-                previous = by_name.get(key)
-                if previous and previous['issn'] != row['issn']:
-                    raise ValueError(f'期刊别名重复：{name}')
-                by_name[key] = row
-            by_issn[issn] = row
+    for row in rows:
+        if row['tier'] not in ('top', 'important', 'other') or not row['name'].strip():
+            raise ValueError('期刊等级名单含有无效记录。')
+        issn = _issn(row['issn'])
+        if not re.fullmatch(r'[0-9]{7}[0-9X]', issn):
+            raise ValueError(f"期刊 ISSN 无效：{row['name']}")
+        checksum = sum((8 - i) * int(char) for i, char in enumerate(issn[:7]))
+        checksum += 10 if issn[-1] == 'X' else int(issn[-1])
+        if checksum % 11:
+            raise ValueError(f"期刊 ISSN 校验失败：{row['name']}")
+        if issn in by_issn:
+            raise ValueError(f"期刊 ISSN 重复：{row['issn']}")
+        for name in (row['name'], *(row['aliases'] or '').split(';')):
+            key = _key(name)
+            if not key:
+                continue
+            previous = by_name.get(key)
+            if previous and previous['issn'] != row['issn']:
+                raise ValueError(f'期刊别名重复：{name}')
+            by_name[key] = row
+        by_issn[issn] = row
     return by_name, by_issn
 
 
-def classify(doc):
+def classify(doc, *, index=None):
     paper_type = doc.get('paper_type', 'journal')
     if paper_type == 'conference':
         return {'tier': 'conference'}
@@ -70,7 +73,7 @@ def classify(doc):
         return {'tier': 'preprint'}
     if paper_type != 'journal':
         return {'tier': 'other'}
-    by_name, by_issn = _catalogue()
+    by_name, by_issn = index if index is not None else _catalogue()
     issn = _issn(doc.get('journal_issn'))
     row = by_issn.get(issn)
     name_rows = [by_name[key] for value in (doc.get('journal'), doc.get('journal_abbr'))

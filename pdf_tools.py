@@ -660,39 +660,9 @@ def _merge_frontmatter(blocks, lines, author_seed):
 
 def _metadata(pdf, first_blocks, first_lines, source_path):
     raw = pdf.metadata or {}
-    joined = '\n'.join(block['text'] for block in first_blocks)
-    title = str(raw.get('Title', '')).strip()
-    if not title or title.lower() in {'untitled', 'microsoft word'} or len(title) > 600:
-        headings = [b for b in first_blocks if b['kind'] == 'heading' and len(b['text']) > 15]
-        title = headings[0]['text'] if headings else Path(source_path).stem
-    corpus = ' '.join(str(v) for v in raw.values()) + '\n' + joined
-    found = _DOI.search(corpus)
-    doi = found.group(0).rstrip('.,;:)') if found else ''
-    subject = str(raw.get('Subject', ''))
-    journal = re.split(r',?\s*(?:doi[:\s]|https?://)', subject, maxsplit=1, flags=re.I)[0].strip()
-    if len(journal) > 100 or len(journal) < 4:
-        journal = ''
-    if not journal:
-        for line in first_lines:
-            match = re.search(r'^([A-Za-z][A-Za-z &/.-]{4,80})\s*\|.*\b(?:19|20)\d{2}\b', line['text'])
-            if match:
-                journal = match.group(1).strip()
-                break
-    years = re.findall(r'\b(?:19|20)\d{2}\b', joined + ' ' + str(raw.get('CreationDate', '')))
-    year = max((int(y) for y in years if 1900 <= int(y) <= 2100), default=None)
-    author_seed = str(raw.get('Author', '')).strip()
-    authors = []
-    author_lines = [l for l in first_lines if author_seed and author_seed.casefold() in l['text'].casefold()]
-    if author_lines:
-        seed = max(author_lines, key=lambda l: len(l['text']))
-        byline = [l for l in first_lines if abs(l['bbox'][1] - seed['bbox'][1]) < 5
-                  and l['bbox'][0] >= seed['bbox'][0] - 2]
-        text = ' '.join(l['text'] for l in sorted(byline, key=lambda l: l['bbox'][0]))
-        # Remove affiliation/superscript markers, retaining only the byline.
-        text = re.sub(r'\d+|[✉*†‡]', '', text)
-        authors = [x.strip(' ,;& ') for x in re.split(r'\s*&\s*|\s*,\s*|\s+and\s+', text) if x.strip(' ,;& ')]
-    elif author_seed:
-        authors = [x.strip() for x in re.split(r';|\s+and\s+', author_seed) if x.strip()]
+    import paper_metadata
+    evidence = paper_metadata.title_evidence(raw, first_blocks, first_lines, pdf.pages[0].height)
+    title = evidence['title'] or Path(source_path).stem
     abstract = ''
     abstract_idx = next((i for i, b in enumerate(first_blocks) if re.match(r'^abstract\b', b['text'], re.I)), None)
     if abstract_idx is not None:
@@ -706,8 +676,17 @@ def _metadata(pdf, first_blocks, first_lines, source_path):
                       and b['bbox'][1] < 400]
         if paragraphs:
             abstract = paragraphs[0]['text']
-    return {'title': title, 'doi': doi, 'authors': authors, 'journal': journal,
-            'year': year, 'abstract': abstract}
+    def page_number(page):
+        candidates = [line['text'].strip() for line in _lines(page)
+                      if line['bbox'][1] < page.height * .07 or line['bbox'][1] > page.height * .93]
+        numbers = [int(s) for s in candidates if re.fullmatch(r'\d{1,6}', s)]
+        return numbers[-1] if numbers else None
+    publication = paper_metadata.extract(raw, first_blocks, first_lines, pdf.pages[0].height,
+        first_text=pdf.pages[0].extract_text() or '',
+        footer_numbers=(page_number(pdf.pages[0]), page_number(pdf.pages[-1]), len(pdf.pages)), title=title)
+    publication['metadata_provenance']['title'] = ({'source': 'pdf', 'location': 'first-page'} if evidence['lines']
+        else {'source': 'pdf-metadata', 'location': 'Title'} if evidence['title'] else {'source': 'filename'})
+    return {'title': title, 'abstract': abstract, **publication}
 
 
 def extract_document(source_path, asset_dir):

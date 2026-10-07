@@ -1,0 +1,20 @@
+{
+  "name": "ECDICT",
+  "upstream": "https://github.com/skywind3000/ECDICT",
+  "revision": "bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b",
+  "source_url": "https://raw.githubusercontent.com/skywind3000/ECDICT/bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b/ecdict.csv",
+  "source_sha256": "1a6947e04785db63613a92e14903cdae7954f7e84860b10e68e5c7cbb3f9c3cf",
+  "license": "MIT",
+  "retained_fields": [
+    "word",
+    "phonetic",
+    "translation",
+    "pos",
+    "exchange"
+  ],
+  "entries": 767910,
+  "forms": 56927,
+  "excluded_rows": 1872,
+  "database_bytes": 58052608,
+  "database_sha256": "b65882603a2a6c09aaea9c8899cba9e18ebe15dbf17834160e73487dd0ba2057"
+}

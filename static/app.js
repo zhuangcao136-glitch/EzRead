@@ -1,6 +1,6 @@
 // Composition: polling, event wiring and application startup.
 function paperSignature(p) {
-  const t = translationOf(p); return JSON.stringify([p.updated_at, t.status, t.done, t.total, t.error, p.summarize_status, p.team_status, p.summary, p.team, p.structure_status, p.structure_error, p.collection, p.collection_assignment]);
+  const t = translationOf(p); return JSON.stringify([p.updated_at, p.text_actions_revision, t.status, t.done, t.total, t.error, p.summarize_status, p.team_status, p.summary, p.team, p.structure_status, p.structure_error, p.collection, p.collection_assignment, p.journal_tier, p.tier_needs_review, p.paper_type, p.conference_name, p.conference_abbr]);
 }
 async function poll() {
   if (state.pollBusy || state.importing || document.hidden) return;
@@ -10,6 +10,7 @@ async function poll() {
     const data = await api("/api/papers"); const changed = (data.papers || []).some(p => before.get(p.id) !== paperSignature(p)) || (data.papers || []).length !== state.papers.length;
     state.papers = data.papers || []; state.collections = list(data.collections).map(c => typeof c === "object" ? c.name : c).filter(Boolean);
     if (changed) { renderLibrary(); if ($("#queue-dialog").open) renderQueue(); }
+    await syncJournalCataloguePanel(data);
     const detailId = state.detail?.id, readerId = state.reader?.id;
     const focusedInput = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
     const readerSummary = state.papers.find(p => p.id === readerId), detailSummary = state.papers.find(p => p.id === detailId);
@@ -17,15 +18,17 @@ async function poll() {
       state.reader.translation = readerSummary.translation; updateReaderProgress();
       if (state.readerRenderedSignature !== paperSignature(readerSummary)) await refreshReader();
     }
-    if ($("#detail-dialog").open && detailSummary && !$("#reader-dialog").open && !focusedInput && !$("#edit-dialog").open && !$("#crop-dialog").open && state.detailRenderedSignature !== paperSignature(detailSummary)) {
+    if ($("#detail-dialog").open && detailSummary && !$("#reader-dialog").open && !focusedInput && !$("#detail-collection-menu")?.matches(":popover-open") && !$("#edit-dialog").open && !$("#crop-dialog").open && state.detailRenderedSignature !== paperSignature(detailSummary)) {
       const scrollTop = $("#detail-dialog").scrollTop;
       const p = normalizeDetail(await api(`/api/papers/${encodeURIComponent(detailId)}`));
-      if (state.detail?.id === detailId && $("#detail-dialog").open) { state.detail = p; renderDetail(); $("#detail-dialog").scrollTop = scrollTop; }
+      if (state.detail?.id === detailId && $("#detail-dialog").open && !$("#detail-collection-menu")?.matches(":popover-open")) { state.detail = p; renderDetail(); $("#detail-dialog").scrollTop = scrollTop; }
     }
   } catch { /* Keep saved views usable during a temporary local-server interruption. */ }
   finally { state.pollBusy = false; }
 }
 function installEvents() {
+  installToastLayer();
+  installSelectMenus();
   $$(".filter-trigger[data-select]").forEach(trigger => trigger.addEventListener("click", () => openFilterMenu(trigger)));
   window.addEventListener("resize", positionFilterMenu);
   window.addEventListener("scroll", positionFilterMenu, true);
@@ -111,6 +114,6 @@ async function init() {
   }
   void loadModels().then(renderLibrary).catch(() => {});
   pollTimer = setInterval(poll, 6000);
-  usagePollTimer = setInterval(() => { if (!document.hidden && ($("#queue-dialog").open || $("#settings-dialog").open)) loadUsage(false); }, 60000);
+  usagePollTimer = setInterval(() => { if (!document.hidden && $("#queue-dialog").open) loadUsage(false); }, 60000);
 }
 init().catch(error => toast(error.message, "error", 9000));

@@ -1,0 +1,60 @@
+// Executed only by the isolated WebView2 verifier's synthetic HTTP server.
+(async () => {
+  const assert = (value, message) => { if (!value) throw Error(message); };
+  const pid = '0123456789abcdef';
+  try {
+    for (let i=0;state.loading&&i<100;i++) await new Promise(resolve=>setTimeout(resolve,20));
+    await openReader(pid);
+    const span=document.querySelector('[data-source-id="one"]'), node=span.firstChild;
+    const range=document.createRange();range.setStart(node,0);range.setEnd(node,5);
+    window.getSelection().removeAllRanges();window.getSelection().addRange(range);
+    const selected=readerSelectionSnapshot();
+    assert(selected.ranges[0].quote==='第一😀句','Unicode range mismatch');
+    for(let i=0;i<50&&!document.querySelector('.reader-text-menu');i++)await new Promise(r=>setTimeout(r,20));
+    assert(document.querySelector('.reader-text-menu'),'Selecting text should open the menu without right click');
+    const rect=range.getBoundingClientRect();
+    const event=new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:rect.left+5,clientY:rect.top+5});
+    span.dispatchEvent(event);
+    assert(event.defaultPrevented,'WebView2 default context menu was not suppressed');
+    assert(document.querySelector('.reader-text-menu')?.matches(':popover-open'),'Selection menu is not in the native top layer');
+    const row=document.querySelector('.reader-text-highlight-row'),swatches=row.querySelectorAll('.reader-text-color');
+    assert(row.textContent==='高亮'&&swatches.length===2,'Highlight should be one row with two color swatches');
+    assert(Math.abs(swatches[0].getBoundingClientRect().top-swatches[1].getBoundingClientRect().top)<1,'Color swatches are not on the same row');
+    assert(window.getSelection().toString()==='第一😀句'&&span.firstChild===node,'Menu destroyed the selected text');
+    readerCloseTextPopup();
+    await readerApplyTextAction('highlight',readerTextPayload(selected));
+    assert(CSS.highlights.get('ezread-text-highlight').size===1,'Native WebView2 highlight was not painted');
+    await readerApplyTextAction('highlight',{...readerTextPayload(selected),color:'red'});
+    await closeReader();await openReader(pid);
+    assert(state.reader.text_annotations.some(a=>a.color==='red'),'Red color was not restored');
+    assert(CSS.highlights.get('ezread-text-highlight-red').size===1,'Native WebView2 red highlight was not painted');
+    assert(CSS.highlights.get('ezread-text-highlight').size===1,'Yellow highlight was lost after reopening');
+    await readerApplyTextAction('note',{...readerTextPayload(readerSelectionSnapshot()||selected),note:'原生蓝线批注'});
+    window.getSelection().removeAllRanges();renderTranslations();
+    const rail=document.querySelector('.translation-block[data-block-id="one"] .reader-annotation-rail');
+    assert(rail&&getComputedStyle(rail,'::before').backgroundColor==='rgb(59, 130, 246)','Blue annotation rail missing');
+    rail.click();assert(document.querySelector('.reader-annotation-note')?.textContent==='原生蓝线批注','Clicking blue rail should display the note');
+    readerCloseTextPopup();
+    assert(document.querySelector('#reader-selection-mode-hint').textContent==='选中文字即可显示操作选项','Selection hint missing');
+    readerSetTextLanguage('original');
+    const english=document.querySelector('.reader-source-text[data-source-id="one"]');
+    const wordRange=document.createRange();wordRange.setStart(english.firstChild,0);wordRange.setEnd(english.firstChild,5);
+    window.getSelection().removeAllRanges();window.getSelection().addRange(wordRange);
+    const wordRect=wordRange.getBoundingClientRect();
+    const openMenu=()=>english.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:wordRect.left+2,clientY:wordRect.top+2}));
+    openMenu();
+    const choice=label=>Array.from(document.querySelectorAll('.reader-text-menu button')).find(b=>b.textContent===label);
+    assert(choice('翻译单词')&&choice('翻译句子'),'Both translation choices must exist');
+    choice('翻译单词').click();
+    for(let i=0;i<100&&readerTextUI.request;i++)await new Promise(r=>setTimeout(r,20));
+    assert(document.querySelector('.reader-selected-translation-result').textContent.includes('first'),'Native offline dictionary lookup failed');
+    readerCloseTextPopup();openMenu();choice('翻译句子').click();
+    for(let i=0;i<100&&readerTextUI.request;i++)await new Promise(r=>setTimeout(r,20));
+    assert(document.querySelector('.reader-selected-translation-result').textContent==='模拟划线译文：First','Native model routing failed');
+    const results={selectedText:selected.text,rangeCodepoints:selected.ranges[0].end-selected.ranges[0].start,selectionPreserved:true,automaticSelectionMenu:true,blueAnnotationRail:true,contextMenuPrevented:true,menuTopLayer:true,highlightSwatchesOnOneRow:true,nativeHighlight:true,redHighlightRestored:true,modeHint:true,offlineDictionary:true,modelChoice:true};
+    await fetch('/__test/native-results',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(results)});
+    await closeReader();
+  } catch(error) {
+    await fetch('/__test/native-results',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:String(error)})});
+  }
+})();

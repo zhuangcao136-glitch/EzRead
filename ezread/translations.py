@@ -3,6 +3,7 @@ from __future__ import annotations
 from .context import ApplicationContext
 import copy
 import secrets
+from .text_actions import original_text, digest
 
 
 def version_metadata(version):
@@ -128,8 +129,13 @@ def execute_translation(app: ApplicationContext, pid, event):
     task = doc['translation']
     config, run_id = copy.deepcopy(task['config']), task['run_id']
     staging = task.get('staging')
-    targets = [b for b in doc.get('blocks', []) if b.get('kind') != 'reference' and not b.get('is_formula') and b.get('text', '').strip()]
-    pending = [b for b in targets if not (staging.get(b['id'], '').strip() if isinstance(staging, dict) else b.get('translation', '').strip())]
+    targets = [b for b in doc.get('blocks', []) if b.get('kind') != 'reference' and not b.get('is_formula') and original_text(b).strip()]
+    staged_hashes = task.get('staging_source_hashes', {})
+    if isinstance(staging, dict):
+        pending = [b for b in targets if not staging.get(b['id'], '').strip() or
+                   staged_hashes.get(b['id'], digest(b.get('text', ''))) != digest(original_text(b))]
+    else:
+        pending = [b for b in targets if not b.get('translation', '').strip() and not b.get('translation_manually_edited')]
     app.update_doc(pid, lambda d: d['translation'].update(status='running', error=''))
     context = {'title': doc['title'], 'abstract': doc.get('abstract', ''), 'journal': doc.get('journal', '')}
     for batch in app.batches(pending):
@@ -151,10 +157,12 @@ def execute_translation(app: ApplicationContext, pid, event):
             active['thread_id'] = thread_id
             if isinstance(active.get('staging'), dict):
                 active['staging'].update(result)
+                active.setdefault('staging_source_hashes', {}).update({b['id']: digest(original_text(b)) for b in batch})
             else:
                 for block in d['blocks']:
-                    if block['id'] in result and not block.get('translation', '').strip():
-                        block.update(translation=result[block['id']], translation_run_id=run_id, translation_manually_edited=False)
+                    if block['id'] in result and not block.get('translation', '').strip() and not block.get('translation_manually_edited'):
+                        block.update(translation=result[block['id']], translation_run_id=run_id, translation_manually_edited=False,
+                                     translation_source_hash=digest(original_text(next(b for b in batch if b['id'] == block['id']))))
         app.update_doc(pid, merge)
         task['thread_id'] = thread_id
     def finish(d):
@@ -167,13 +175,21 @@ def execute_translation(app: ApplicationContext, pid, event):
         if isinstance(active.get('staging'), dict):
             if any(not active['staging'].get(b['id'], '').strip() for b in targets):
                 raise ValueError('重译尚未完整，继续保留当前可读版本。')
+            current_by_id = {b['id']: b for b in d['blocks']}
+            for expected in targets:
+                current = current_by_id[expected['id']]
+                source_hash = active.get('staging_source_hashes', {}).get(expected['id'], digest(expected.get('text', '')))
+                if current.get('source_range_revision') != expected.get('source_range_revision') or digest(original_text(current)) != source_hash:
+                    raise ValueError('翻译期间正文有新修订，重译结果保留为草稿，未覆盖新内容。')
             app.archive_translation(d)
             for block in d['blocks']:
                 if block['id'] in active['staging']:
                     for key in app.TRANSLATION_FIELDS:
                         block.pop(key, None)
-                    block.update(translation=active['staging'][block['id']], translation_run_id=run_id, translation_manually_edited=False)
+                    block.update(translation=active['staging'][block['id']], translation_run_id=run_id, translation_manually_edited=False,
+                                 translation_source_hash=active.get('staging_source_hashes', {}).get(block['id'], digest(next((original_text(b) for b in targets if b['id'] == block['id']), block.get('text', '')))))
             del active['staging']
+            active.pop('staging_source_hashes', None)
         translated = [b for b in d['blocks'] if b.get('kind') != 'reference' and not b.get('is_formula') and b.get('text', '').strip()]
         sources = [d.get('translation_runs', {}).get(b.get('translation_run_id'), {}).get('config') for b in translated]
         homogeneous = bool(sources) and all(source is not None and source == sources[0] for source in sources)

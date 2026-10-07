@@ -8,7 +8,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from ezread.config import data_directory as configured_data_directory
 
 ROOT = Path(__file__).resolve().parent
@@ -104,34 +103,8 @@ def ensure_server():
 
 
 def open_window():
-    candidates = [
-        Path(os.environ.get('PROGRAMFILES(X86)', 'C:/Program Files (x86)')) / 'Microsoft/Edge/Application/msedge.exe',
-        Path(os.environ.get('PROGRAMFILES', 'C:/Program Files')) / 'Microsoft/Edge/Application/msedge.exe',
-        Path(os.environ.get('PROGRAMFILES', 'C:/Program Files')) / 'Google/Chrome/Application/chrome.exe',
-        Path(os.environ.get('LOCALAPPDATA', '')) / 'Microsoft/Edge/Application/msedge.exe',
-        Path(os.environ.get('LOCALAPPDATA', '')) / 'Google/Chrome/Application/chrome.exe',
-    ]
-    browser = next((path for path in candidates if path.is_file()), None)
-    if browser:
-        subprocess.Popen(
-            [str(browser), '--app=' + URL,
-             '--user-data-dir=' + str(data_directory() / 'browser-profile'),
-             '--no-first-run', '--no-default-browser-check', '--window-size=1450,950'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        # The real favicon is browser-owned and persists without this helper.
-        # Only hide its small caption icon. The VBS caller is non-blocking.
-        try:
-            from window_icons import maintain_taskbar_icon
-            maintain_taskbar_icon(ROOT, data_directory() / 'browser-profile')
-        except Exception as exc:
-            # An icon failure must not prevent the reader from opening.
-            log_directory = ROOT / 'work'
-            log_directory.mkdir(exist_ok=True)
-            with (log_directory / 'window-icon-helper.log').open('a', encoding='utf-8') as log:
-                log.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {type(exc).__name__}: {exc}\n')
-    else:
-        webbrowser.open(URL)
+    from desktop_runtime import open_desktop
+    return open_desktop(ROOT, data_directory(), URL)
 
 
 def main():

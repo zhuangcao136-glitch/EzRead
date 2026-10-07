@@ -16,7 +16,7 @@ function cardModelConfig(p) {
 function paperType(p) { return Object.hasOwn(PAPER_TYPES, p.paper_type) ? p.paper_type : "journal"; }
 function journalNameOf(p) { return String(p.journal || p.journal_abbr || "").trim().replace(/\s+(?:19|20)\d{2}(?:[.,]\d+)?(?::\s*[\w.-]+)?\s*$/u, "").trim(); }
 function journalOf(p) {
-  if (paperType(p) === "conference") return p.conference_abbr || p.conference_name || "会议待补充";
+  if (paperType(p) === "conference") return String(p.conference_abbr || "").trim() || "会议简称待补充";
   if (paperType(p) === "preprint") return p.journal_abbr || p.journal || "预印本";
   const name = journalNameOf(p);
   const key = name.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -62,6 +62,6 @@ function rankAppearance(p) {
 }
 function rankBadges(p) {
   const tier = tierOf(p);
-  const title = p.tier_needs_review ? "期刊全称、简称或 ISSN 冲突，请核对论文信息" : tier === "other" && paperType(p) === "journal" ? "未列入 2025 固定名单" : TIER_NAMES[tier];
+  const title = p.tier_needs_review ? "期刊全称、简称或 ISSN 冲突，请核对论文信息" : tier === "other" && paperType(p) === "journal" ? "未列入顶级或重要名单" : TIER_NAMES[tier];
   return [el("span", { class: `rank-badge rank-${tier}`, title }, TIER_NAMES[tier])];
 }

@@ -33,14 +33,14 @@ def import_pdf(app: ApplicationContext, content, filename):
         for key in ('title', 'doi', 'authors', 'journal', 'year', 'abstract'):
             if extracted.get(key) and not metadata.get(key):
                 metadata[key] = extracted[key]
-        remote = app.crossref_metadata(metadata.get('doi'))
-        metadata.update({k: v for k, v in remote.items() if v})
+        import paper_metadata
+        metadata = paper_metadata.normalize_publication(metadata)
         doc = {**extracted, **metadata, 'id': pid, 'hash': fingerprint, 'filename': Path(filename).name,
                'title': metadata.get('title') or Path(filename).stem,
                'title_zh': '', 'summary': '', 'problem': '', 'method': '', 'results': '', 'limitations': '',
                'journal': metadata.get('journal', ''), 'journal_abbr': app.journal_abbr(metadata.get('journal', '')),
                'paper_type': metadata.get('paper_type') or ('journal' if metadata.get('journal') else 'other'),
-               'conference_name': metadata.get('conference_name', ''), 'conference_abbr': '',
+               'conference_name': metadata.get('conference_name', ''), 'conference_abbr': metadata.get('conference_abbr', ''),
                'conference_track': metadata.get('conference_track', 'unknown'),
                'authors': metadata.get('authors', []), 'tags': [], 'collection': '', 'favorite': False,
                'created_at': app.now(), 'updated_at': app.now(), 'last_read': '', 'read_page': 1,
@@ -50,9 +50,8 @@ def import_pdf(app: ApplicationContext, content, filename):
             doc['import_warning'] = '未提取到可选文字，可能是扫描件。可查看原文和选封面，暂不能全文翻译。'
         import paper_structure
         doc['reading_structure'] = paper_structure.organize(doc)
-        doc['collection'] = paper_structure.PENDING_COLLECTION
-        doc['collection_assignment'] = {'status': 'queued' if doc.get('blocks') else 'needs_review',
-                                        'error': '' if doc.get('blocks') else '未提取到正文，请手动归类或完成 OCR 后重试。'}
+        from .publication import assessment
+        doc['metadata_enrichment'] = assessment(doc)
         app.put_doc(doc)
         import paper_ai
         with app.LOCK, app.db() as con:

@@ -25,6 +25,7 @@ class ApplicationContext(Protocol):
     ROOT: Path
     STATIC: Path
     STATUS_CACHE: dict[str, Any]
+    SELECTION_REQUESTS: Any
     STRUCTURE_JOBS: Queue[str]
     STRUCTURE_QUEUED: set[str]
     TRANSLATION_FIELDS: tuple[str, ...]
@@ -39,9 +40,9 @@ class ApplicationContext(Protocol):
     crossref_metadata: Callable[..., Any]
     db: Callable[..., Any]
     enqueue: Callable[..., Any]
+    enrich_publication: Callable[..., Any]
     execute_translation: Callable[..., Any]
     get_doc: Callable[..., Any]
-    import_collection_context: Callable[..., Any]
     import_pdf: Callable[..., Any]
     init_db: Callable[..., Any]
     journal_abbr: Callable[..., Any]

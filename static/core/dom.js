@@ -3,6 +3,8 @@ function el(tag, attrs = {}, ...children) {
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined || value === null || value === false) continue;
     if (key === "class") node.className = value;
+    // Keep accessible names without hover text.
+    else if (key === "title") continue;
     else if (key === "text") node.textContent = String(value);
     else if (key === "dataset") Object.assign(node.dataset, value);
     else if (key === "style") { const styles = { ...value }; if (/^\d+(?:\.\d+)?px$/.test(styles.fontSize || "")) styles.fontSize = `calc(var(--ui-font-size) * ${Math.max(.875, Number.parseFloat(styles.fontSize) / 14)})`; for (const [name, item] of Object.entries(styles)) { if (name.startsWith("--")) node.style.setProperty(name, String(item)); else node.style[name] = item; } }
@@ -26,7 +28,7 @@ function button(label, action, kind = "secondary", iconName = "", attrs = {}) {
   return el("button", { type: "button", class: `button ${kind}`, onclick: action, ...attrs }, iconName ? icon(iconName) : null, label);
 }
 function iconButton(name, label, action) { return el("button", { type: "button", class: "icon-button", title: label, "aria-label": label, onclick: action }, icon(name)); }
-function field(label, input, hint = "") { return el("label", { class: "field" }, label, input, hint ? el("small", {}, hint) : null); }
+function field(label, input) { return el("label", { class: "field" }, label, input); }
 function asText(value) {
   if (value === undefined || value === null) return "";
   if (typeof value === "string" || typeof value === "number") return String(value);

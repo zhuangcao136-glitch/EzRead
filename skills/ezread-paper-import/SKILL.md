@@ -1,6 +1,6 @@
 ---
 name: ezread-paper-import
-description: Organize imported scientific PDF text in EzRead into source-preserving title, authors, affiliations, article information, abstract, sections and natural paragraphs, and automatically assign papers to research-topic collections; use for PDF ingestion, topic grouping, structured English reading and extraction quality review.
+description: Organize imported PDFs in EzRead into source-preserving paper sections, extract publication metadata locally, and offer user-approved online completion for missing publication fields; use for PDF ingestion, structured original-text reading and extraction quality review.
 ---
 
 # EzRead 论文导入与英文原文整理
@@ -10,12 +10,13 @@ description: Organize imported scientific PDF text in EzRead into source-preserv
 ## 执行流程
 
 1. 保留原 PDF。提取文字、字体、坐标、栏顺序、图表和公式，每个源文本块保留稳定 ID、页码和 bbox。先恢复栏顺序和行，再恢复自然段；PDF 换行、换栏和换页本身不是段落边界。
+   同时执行 `scripts/publication.py` 的本地出版信息识别。优先采用首页可核对的期刊 / 出版来源、作者、发表时间、卷期、发表页码或文章编号、DOI；这些信息完整时直接进入后续整理，不额外检索。缺项时按 [references/publication.md](references/publication.md) 列明未识别项，使用应用内的苹果风格弹窗让用户选择“暂不搜索”或“联网补全”。只有点击联网补全才查询外部出版信息；关闭或 Esc 视为暂不搜索。原文仍能阅读，用户可以稍后在论文信息中重试。
 2. 执行 `scripts/organize.py` 的 `organize(document)`，建立独立结构层。固定首页信息顺序为 Title → Authors → Affiliations → Article Info → Abstract；正文按原论文的章节顺序，保留小节、自然段、参考文献、附录和声明。Introduction 通常含多个自然段，不强制压成一段。没有对应信息就省略该组，不编造作者、机构、实验室、日期或章节。
-3. 导入后自动在后台进行一次 AI 语义校对和研究主题归类。复用设置中的快速模型，导入时保存所选模型，按官方模型目录验证配置；不改变论文全文翻译/问答的模型。读 [references/semantic.md](references/semantic.md)，识别首页栏目和真实章节标题；只返回源 ID 的分类，不生成替换英文。发送首页与有歧义的标题候选、相邻上下文，避免反复发送全文。完整原文始终由程序从源块装配。
+3. 导入后自动在后台进行一次 AI 原文结构校对。复用设置中的快速模型，导入时保存所选模型，按官方模型目录验证配置；不改变论文全文翻译/问答的模型。读 [references/semantic.md](references/semantic.md)，识别首页栏目和真实章节标题；只返回源 ID 的分类，不生成替换英文，也不返回主题归属。发送首页与有歧义的标题候选、相邻上下文，避免反复发送全文。完整原文始终由程序从源块装配。
 4. 用 `validate_roles` 校验 AI 结果：候选 ID 全部且唯一覆盖，拒绝未知 ID、正文伪装成页眉页脚、公式误分类。最终用 `audit_structure` 检查每个源块恰好归入一个阅读条目或带理由的版面噪声清单。校验失败保留本地结果，显示待核对，不以 AI 错误阻断导入。
 5. 保存结构版本、源指纹、实际处理方式、模型配置、状态和提示。同一版本和源指纹直接复用；失败不自动循环重试，用户可手动重试。打开已有文献只建立本地结构，不批量发起模型请求。
 6. 右侧按结构连续显示，不显示页码分隔标题；源页码用于对照定位。合并段落仍保留每个源 ID，让已译片段、手工修订、批注、高亮和阅读位置继续有效。不要替换原 `blocks` 或重新编号。
-7. 新导入论文先暂存于“待分类”，同次语义调用按 [references/collections.md](references/collections.md) 返回主题归属。结合标题、摘要、已有合集名称及最多三篇示例论文，优先复用能容纳主要贡献的已有主题；没有对应主题才新建简短中文合集。归类结果与合集列表一起持久保存，Unicode/空格/标点/大小写近似的名称复用既有名称。手动移入或移出后标记 manual，后台结果不能覆盖；重复导入保持原归属，不给旧库批量归类。分类和源块结构分别校验，某一项失败不能丢弃另一项的有效结果。信息不足或调用失败保留“待分类”、显示原因并提供重试/手动选择，不反复自动请求。
+7. 合集归属由用户手动选择，遵循 [references/collections.md](references/collections.md)。新导入论文的 collection 留空，在“全部论文”中显示；不自动创建合集，也不自动放入“待分类”。结构校对不发送已有合集、示例论文或主题分类请求，不写入合集归属。保留既有合集及旧论文的归属，重复导入复用已有论文与归属。手动移入、移出及合集管理沿用应用现有入口。
 
 ## 划分和罗列规则
 
@@ -27,6 +28,12 @@ description: Organize imported scientific PDF text in EzRead into source-preserv
 
 ## 应用接入和验收
 
-应用从本 Skill 的 `scripts/organize.py` 加载处理逻辑，并把本文件及语义参考送入受限的 Codex 文本调用，因此 Markdown 约定和实际执行同源。使用用户订阅内的现有 Codex 桥接；不读取凭据、不新增收费 API、不进行联网作者归属猜测。
+应用从本 Skill 的 `scripts/organize.py` 和 `scripts/publication.py` 加载结构与本地元数据处理逻辑，并把本文件及语义参考送入受限的 Codex 文本调用，因此 Markdown 约定和实际执行同源。结构校对使用现有 Codex 桥接；出版信息补全由应用在用户确认后查询公开的 Crossref / arXiv。语义校对的模型不能自行启动出版信息检索或把联网结果写成 PDF 原文。不读取凭据、不新增收费 API、不进行联网作者归属猜测。
 
-测试至少覆盖单栏、双栏、多行标题、作者上标、首页脚注机构、Article Info 与摘要并排、跨栏/跨页段落、无标签摘要、公式表格、漏块/重复块拒绝和已译批注保留，以及已有主题复用、新主题创建、重复导入、连续导入避免重名、手动修改优先、失败保留/可重试。使用隔离数据目录和模拟模型结果；真实文献可只读验收，不为了测试反复消耗模型额度。
+导入、缺项判断、联网记录转换和卡片显示共用 `normalize_publication`；完整标题识别共用 `title_evidence`。修正规则应针对证据和版式，用不同标题的文献回归，不能在运行时代码中针对单篇 ID、标题或 DOI 打补丁。用户手工值和检索期间的修改优先；旧库仅在显示时校验或由用户明确重试补全，不批量重写论文数据。
+
+测试至少覆盖单栏、双栏、多行标题、作者上标、首页脚注机构、Article Info 与摘要并排、跨栏/跨页段落、无标签摘要、公式表格、漏块/重复块拒绝和已译批注保留，以及新导入不分配/创建合集、模型请求只做原文结构校对、旧分类输出不改写归属、手动管理与重复导入归属保留、结构校对失败可重试。使用隔离数据目录和模拟模型结果；真实文献可只读验收，不为了测试反复消耗模型额度。
+
+出版信息还须验证：字段完整时不弹窗、不检索；缺 DOI / 日期时准确列缺项；暂不搜索、关闭或 Esc 不发外部请求；确认后查到可靠记录才补全；多行标题、版权旁栏与文章编号页脚能正确识别；旧库的非人名作者不否决正确结果，明确误识别的自动字段可纠正并记录来源；相近标题、多个候选、真实作者冲突、网络失败和仅部分字段可查时保留有效内容并允许重试；不覆盖手工元数据、源块、译文、批注或阅读位置。
+
+跨文献验收覆盖缺内部 Title、出版商页眉 / 首页提示、中文短标题、同字体作者、多行 / 同行拆分标题与单位上标。会议论文须检查从本地提取、导入保存、用户确认补全到卡片显示的全程类型与简称一致，不能只验证显示投影；错误的旧 complete 状态应重新列缺项，但保留用户已拒绝联网的选择。

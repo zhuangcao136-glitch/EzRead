@@ -29,6 +29,9 @@ assert.equal(journalContext.journalOf({ journal: "The International Journal of R
 assert.equal(journalContext.journalOf({ journal: "Advanced Intelligent Systems 2024.6:2400022", journal_abbr: "Advanced Intelligent Systems 2024.6:2400022" }), "Adv. Intell. Syst.");
 assert.equal(journalContext.journalOf({ journal: "Journal of Experimental Robotics" }), "JER");
 assert.equal(journalContext.journalOf({ journal: "", paper_type: "preprint" }), "预印本");
+assert.equal(journalContext.journalOf({ paper_type: "conference", conference_name: "Full conference name", conference_abbr: "CASE" }), "CASE");
+assert.equal(journalContext.journalOf({ paper_type: "conference", conference_name: "Full conference name", conference_abbr: "RoboSoft" }), "RoboSoft");
+assert.equal(journalContext.journalOf({ paper_type: "conference", conference_name: "Unrecognized Conference" }), "会议简称待补充");
 
 const cardContext = {
   state: { settings: { translation_model: "", translation_reasoning_effort: "" } },

@@ -15,7 +15,7 @@ function renderLibrary() {
   if (state.loading) { grid.replaceChildren(...Array.from({ length: 6 }, () => el("div", { class: "skeleton-card" }))); empty.classList.add("hidden"); return; }
   const papers = filteredPapers(); $("#result-count").textContent = `${papers.length} 篇论文${hasFilters ? ` / 共 ${state.papers.length} 篇` : ""}`;
   empty.classList.toggle("hidden", state.papers.length > 0); grid.classList.toggle("hidden", !state.papers.length);
-  if (state.papers.length && !papers.length) grid.replaceChildren(el("div", { class: "no-results", style: { columnSpan: "all" } }, el("h3", {}, "暂时没有匹配的论文"), el("p", { class: "small" }, "试着更换关键词，或清除筛选条件。"), button("查看全部论文", () => { clearFilters(); setView("all"); }, "subtle", "", { style: { marginTop: "20px" } })));
+  if (state.papers.length && !papers.length) grid.replaceChildren(el("div", { class: "no-results", style: { columnSpan: "all" } }, el("h3", {}, "暂时没有匹配的论文"), button("查看全部论文", () => { clearFilters(); setView("all"); }, "subtle", "", { style: { marginTop: "20px" } })));
   else if (papers.length) renderMasonry(grid, papers);
   else grid.replaceChildren();
   renderLegend(); renderBulkbar(papers);

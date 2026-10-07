@@ -1,6 +1,7 @@
 """Loopback HTTP contract; delegate business operations to the application context."""
 from __future__ import annotations
 from .context import ApplicationContext
+from . import journal_catalogue
 import contextlib
 import json
 import os
@@ -36,13 +37,17 @@ def handler_for(app: ApplicationContext):
 
         def send_json(self, value, code=200):
             raw = json.dumps(value, ensure_ascii=False).encode('utf-8')
-            self.send_response(code)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(raw)))
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('X-Content-Type-Options', 'nosniff')
-            self.end_headers()
-            self.wfile.write(raw)
+            try:
+                self.send_response(code)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Content-Length', str(len(raw)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                self.wfile.write(raw)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                # AbortController intentionally disconnects superseded requests.
+                self.close_connection = True
 
         def read_json(self):
             size = int(self.headers.get('Content-Length', 0))
@@ -84,15 +89,21 @@ def handler_for(app: ApplicationContext):
                 elif path == '/api/papers':
                     docs = app.all_docs()
                     collections = set(app.settings().get('collections', [])) | {d.get('collection') for d in docs if d.get('collection')}
-                    self.send_json({'papers': [app.public_doc(d) for d in docs], 'collections': sorted(collections)})
+                    catalogue = journal_catalogue.snapshot(app.DATA)
+                    self.send_json({'papers': [app.public_doc(d) for d in docs], 'collections': sorted(collections),
+                                    'journal_catalogue_revision': catalogue['revision'], 'journal_catalogue_error': catalogue['error']})
                 elif path == '/api/status':
                     import codex_usage
-                    self.send_json({'codex': app.codex_status(), 'usage': codex_usage.snapshot(), 'queue': [{'paper_id': p, 'kind': k} for p, k in list(app.QUEUED)], 'version': app.VERSION, 'data_dir': str(app.DATA)})
+                    self.send_json({'codex': app.codex_status(force=urllib.parse.parse_qs(parts.query).get('refresh') == ['1']), 'usage': codex_usage.snapshot(), 'queue': [{'paper_id': p, 'kind': k} for p, k in list(app.QUEUED)], 'version': app.VERSION, 'data_dir': str(app.DATA)})
                 elif path == '/api/usage':
                     import codex_usage
                     self.send_json(codex_usage.get(refresh=urllib.parse.parse_qs(parts.query).get('refresh') == ['1']))
                 elif path == '/api/settings':
                     self.send_json(app.settings())
+                elif path == '/api/journal-catalogue':
+                    self.send_json(journal_catalogue.snapshot(app.DATA))
+                elif re.fullmatch(r'/api/journal-catalogue/proposals/[a-f0-9]{24}', path):
+                    self.send_json(journal_catalogue.proposal(app.DATA, path.rsplit('/', 1)[-1]))
                 elif path == '/api/models':
                     import codex_models
                     self.send_json(codex_models.get(refresh=urllib.parse.parse_qs(parts.query).get('refresh') == ['1']))
@@ -107,6 +118,7 @@ def handler_for(app: ApplicationContext):
                     with zipfile.ZipFile(export, 'w', zipfile.ZIP_DEFLATED) as z:
                         z.write(snapshot, 'data/library.sqlite3')
                         z.writestr('library.json', json.dumps({'version': app.VERSION, 'papers': docs, 'settings': app.settings()}, ensure_ascii=False, indent=2))
+                        z.writestr('data/journal_tiers.csv', journal_catalogue._encoded(journal_catalogue.snapshot(app.DATA)['rows']))
                         for file in app.LIBRARY.rglob('*'):
                             if file.is_file() and file.suffix.lower() in ('.pdf', '.jpg', '.png', '.json'):
                                 z.write(file, 'data/library/' + file.relative_to(app.LIBRARY).as_posix())
@@ -172,6 +184,31 @@ def handler_for(app: ApplicationContext):
                 return
             try:
                 path = urllib.parse.urlparse(self.path).path
+                if path == '/api/journal-catalogue/proposals':
+                    self.send_json(journal_catalogue.start_proposal(app, self.read_json().get('instruction')), 202)
+                    return
+                text_match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/text-actions', path)
+                if text_match:
+                    from . import text_actions
+                    from codex_bridge import TranslationError
+                    pid = text_match.group(1)
+                    data = self.read_json()
+                    try:
+                        if data.get('action') == 'cancel_translation':
+                            self.send_json(app.SELECTION_REQUESTS.cancel(pid, data))
+                        elif data.get('action') == 'translate_word':
+                            self.send_json(text_actions.translate_word(app, pid, data))
+                        elif data.get('action') in {'translate', 'translate_sentence'}:
+                            self.send_json(text_actions.translate(app, pid, data))
+                        else:
+                            doc = text_actions.retranslate(app, pid, data) if data.get('action') == 'retranslate' else text_actions.apply(app, pid, data)
+                            self.send_json({'paper': app.public_doc(doc, True)})
+                    except text_actions.TextConflict as exc:
+                        self.send_json({'error': str(exc)}, 409)
+                    except TranslationError as exc:
+                        code = 409 if exc.code == 'cancelled' else 408 if exc.code == 'timeout' else 502
+                        self.send_json({'error': str(exc), 'code': exc.code}, code)
+                    return
                 file_match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/(copy-pdf|reveal-pdf)', path)
                 if file_match:
                     self.read_json()
@@ -208,8 +245,8 @@ def handler_for(app: ApplicationContext):
                         if not app.codex_status().get('authenticated'):
                             raise ValueError('请先在官方 Codex 中登录 ChatGPT 账号。')
                         import codex_models, codex_bridge
-                        model = app.settings()['selection_translation_model']
-                        config = codex_models.resolve_config(model)
+                        settings = app.settings()
+                        config = codex_models.resolve_config(settings['selection_translation_model'], settings['selection_translation_reasoning_effort'])
                         result = codex_bridge.translate_selection(selected, **config)
                         self.send_json({'translation': result})
                     return
@@ -235,13 +272,15 @@ def handler_for(app: ApplicationContext):
                             errors.append({'filename': filename, 'error': str(exc)})
                     self.send_json({'papers': papers, 'errors': errors})
                     return
-                match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/(structure|translate|pause|summarize|team|cover|restore|translation-restore|translation-resume-draft)', path)
+                match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/(metadata-enrich|structure|translate|pause|summarize|team|cover|restore|translation-restore|translation-resume-draft)', path)
                 if not match:
                     self.send_json({'error': '接口不存在。'}, 404)
                     return
                 pid, action = match.groups()
                 data = self.read_json()
-                if action == 'structure':
+                if action == 'metadata-enrich':
+                    app.enrich_publication(pid, data)
+                elif action == 'structure':
                     app.schedule_structure(pid)
                 elif action in ('translate', 'summarize', 'team'):
                     state = app.codex_status()
@@ -283,6 +322,14 @@ def handler_for(app: ApplicationContext):
             try:
                 path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
                 data = self.read_json()
+                if path == '/api/journal-catalogue':
+                    try:
+                        result = journal_catalogue.apply_changes(app.DATA, data.get('changes'), data.get('revision'))
+                    except journal_catalogue.CatalogueConflict as exc:
+                        self.send_json({'error': str(exc)}, 409)
+                        return
+                    self.send_json(result)
+                    return
                 if path == '/api/settings':
                     data = app.validate_settings(data)
                     with app.LOCK, app.db() as con:
@@ -316,13 +363,22 @@ def handler_for(app: ApplicationContext):
                     retired_metrics = {'jif', 'jif_year', 'quartiles', 'metrics_source', 'conference_rankings'}
                     if retired_metrics.intersection(data):
                         raise ValueError('已取消影响因子、分区和会议评级的编辑。')
-                    allowed = {'title', 'title_zh', 'summary', 'journal', 'journal_abbr', 'year', 'authors', 'tags', 'collection', 'favorite', 'notes', 'read_page', 'reader_state', 'last_read', 'doi', 'paper_type', 'conference_name', 'conference_abbr', 'conference_track'}
+                    allowed = {'title', 'title_zh', 'summary', 'journal', 'journal_abbr', 'year', 'authors', 'tags', 'collection', 'favorite', 'notes', 'read_page', 'reader_state', 'last_read', 'doi', 'paper_type', 'conference_name', 'conference_abbr', 'conference_track', 'publication_date', 'volume', 'issue', 'page_range', 'article_number'}
                     fields = {k: v for k, v in data.items() if k in allowed}
-                    for k in ('title', 'title_zh', 'summary', 'journal', 'journal_abbr', 'collection', 'notes', 'last_read', 'doi', 'paper_type', 'conference_name', 'conference_abbr', 'conference_track'):
+                    for k in ('title', 'title_zh', 'summary', 'journal', 'journal_abbr', 'collection', 'notes', 'last_read', 'doi', 'paper_type', 'conference_name', 'conference_abbr', 'conference_track', 'publication_date', 'volume', 'issue', 'page_range', 'article_number'):
                         if k in fields and not isinstance(fields[k], str):
                             raise ValueError(k + ' 必须是文字。')
                     if 'favorite' in fields and not isinstance(fields['favorite'], bool):
                         raise ValueError('收藏状态必须为布尔值。')
+                    if fields.get('publication_date') and not re.fullmatch(r'\d{4}(?:-\d{2}(?:-\d{2})?)?', fields['publication_date']):
+                        raise ValueError('发表时间请使用 YYYY、YYYY-MM 或 YYYY-MM-DD。')
+                    if fields.get('publication_date'):
+                        from datetime import date
+                        pieces = [int(s) for s in fields['publication_date'].split('-')]
+                        date(*[pieces[i] if i < len(pieces) else 1 for i in range(3)])
+                        if fields.get('year') not in (None, '', pieces[0]):
+                            raise ValueError('发表时间与年份不一致，请核对。')
+                        fields['year'] = pieces[0]
                     if 'collection' in fields:
                         fields['collection'] = fields['collection'].strip()
                         if len(fields['collection']) > 100 or re.search(r'[\x00-\x1f]', fields['collection']):

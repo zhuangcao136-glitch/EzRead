@@ -7,15 +7,16 @@ import argparse
 import queue
 import sys
 import threading
-import webbrowser
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from ezread.config import VERSION, data_directory as _data_directory
+from ezread.selection_requests import SelectionRequests
 from ezread import (
     storage as _storage,
     preferences as _preferences,
     library as _library,
     imports as _imports,
+    publication as _publication,
     structure as _structure,
     translations as _translations,
     tasks as _tasks,
@@ -36,14 +37,15 @@ QUEUED: set[tuple[str, str]] = set()
 RESUME_REQUESTED: set[tuple[str, str]] = set()
 QUOTA_PAUSED = threading.Event()
 STATUS_CACHE = {'at': 0, 'value': {}}
+SELECTION_REQUESTS = SelectionRequests()
 STRUCTURE_JOBS = queue.Queue()
 STRUCTURE_QUEUED = set()
 DEFAULT_SETTINGS = {'sort': 'last_read', 'theme': 'paper', 'collections': [],
-                    'ui_font': 'system', 'reader_font': 'system', 'ui_font_size': 16, 'reader_font_size': 18,
+                    'ui_font_size': 16, 'reader_font_size': 18,
                     'reader_sync': True, 'reader_split_ratio': 0.5,
                     'translation_model': '', 'translation_reasoning_effort': '',
-                    'selection_translation_model': 'gpt-6-luna'}
-TRANSLATION_FIELDS = ('translation', 'translation_run_id', 'translation_manually_edited', 'translation_modified_at')
+                    'selection_translation_model': 'gpt-6-luna', 'selection_translation_reasoning_effort': ''}
+TRANSLATION_FIELDS = ('translation', 'translation_run_id', 'translation_manually_edited', 'translation_modified_at', 'translation_source_hash')
 
 # Explicit context injection preserves the existing entry point used by scripts and tests.
 _context = sys.modules[__name__]
@@ -119,12 +121,12 @@ def import_pdf(content, filename):
     return _imports.import_pdf(_context, content, filename)
 
 
+def enrich_publication(pid, data):
+    return _publication.enrich(_context, pid, data)
+
+
 def schedule_structure(pid):
     return _structure.schedule_structure(_context, pid)
-
-
-def import_collection_context():
-    return _structure.import_collection_context(_context)
 
 
 def commit_import_result(pid, original, result):
@@ -204,11 +206,11 @@ def main():
     try:
         httpd = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     except OSError:
-        if args.open:
-            webbrowser.open(f'http://127.0.0.1:{PORT}')
+        # Do not open an unknown listener or a different library after bind fails.
         raise
     if args.open:
-        webbrowser.open(f'http://127.0.0.1:{PORT}')
+        from desktop_runtime import open_desktop
+        open_desktop(ROOT, DATA, f'http://127.0.0.1:{PORT}')
     print(f'EzRead {VERSION} ready: http://127.0.0.1:{PORT}', flush=True)
     try:
         httpd.serve_forever()
@@ -217,6 +219,9 @@ def main():
     finally:
         import codex_usage
         import codex_models
+        import selection_codex
+        SELECTION_REQUESTS.shutdown()
+        selection_codex.shutdown()
         codex_usage.shutdown()
         codex_models.shutdown()
         for event in CANCEL.values():

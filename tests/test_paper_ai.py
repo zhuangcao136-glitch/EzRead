@@ -105,7 +105,7 @@ class PaperAITests(unittest.TestCase):
         self.assertEqual(result,{'p1-b1':'译文 p1-b1'})
         with self.db() as con:
             self.assertFalse(paper_ai.history(con,PID)['messages'])
-        with patch.object(codex_bridge,'_run_json',return_value={'translation':'接触力'}):
+        with patch('selection_codex.translate',return_value='接触力'):
             self.assertEqual(codex_bridge.translate_selection('contact force',**config),'接触力')
 
     def test_invalid_citation_is_not_saved(self):

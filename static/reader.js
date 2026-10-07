@@ -10,7 +10,7 @@ const readerRuntime = {
   savedSignature: "", savePromise: null, closePromise: null,
   notes: null, editor: null, libraryAnchor: null, lifecycleBound: false,
   layoutFrame: 0, restoring: false, splitSaveTimer: null,
-  selectionTranslationMode: false, selectionTranslations: new Map(), selectionClickUntil: 0
+  selectionTranslations: new Map(), selectionClickUntil: 0, textLanguage: "auto"
 };
 
 const READER_ZOOMS = [75, 100, 125, 150, 200];
@@ -94,7 +94,7 @@ function readerPageNumber(value, count) {
   return Math.max(1, Math.min(Math.max(1, count), Math.round(Number(value) || 1)));
 }
 function readerSyncEnabled() { return state.settings.reader_sync !== false; }
-function readerIsEditing() { return Boolean(readerRuntime.editor || document.activeElement?.closest(".reader-notes, .block-editor")); }
+function readerIsEditing() { return Boolean(readerRuntime.editor || document.activeElement?.closest(".reader-notes, .block-editor") || typeof readerTextProtected === "function" && readerTextProtected()); }
 function readerScrollActive() { return Boolean(state.reader && $("#reader-dialog")?.open); }
 function readerAtPage(container, nodes) {
   if (!nodes.length) return null;
@@ -164,7 +164,8 @@ async function openReader(id) {
   readerRuntime.position = position; readerRuntime.mode = position.mode; readerRuntime.split = position.split_ratio;
   state.readerPage = position.page; state.selectedBlock = null; state.zoom = position.zoom;
   readerRuntime.thumbsOpen = false; readerRuntime.savedSignature = ""; readerRuntime.editor = null;
-  readerRuntime.selectionTranslationMode = false;
+  readerRuntime.textLanguage = readerReadLocal("language", id)?.value === "original" ? "original" : "auto";
+  if (typeof readerTextUI !== "undefined") { readerTextUI.editor = null; readerCloseTextPopup(true); }
   readerRuntime.selectionTranslations.clear();
   const notesDraft = readerReadLocal("notes", id);
   readerRuntime.notes = { id, value: typeof notesDraft?.value === "string" ? notesDraft.value : p.notes || "", savedValue: p.notes || "", timer: null, saving: null, storageOk: true };
@@ -196,7 +197,7 @@ function renderReader() {
   readerRuntime.blockSignatures.clear();
   readerRuntime.structureSignature = ""; readerRuntime.entriesBySource.clear();
   const pageInput = el("input", { type: "number", min: "1", max: p.pages.length || 1, value: state.readerPage, id: "reader-page-input", "aria-label": "当前页码", onchange: event => setReaderPage(Number(event.target.value), true) });
-  const zoom = el("select", { class: "zoom-select", id: "reader-zoom", "aria-label": "原文页面缩放", onchange: event => { state.zoom = event.target.value; drawOriginalPage(); readerQueuePositionSave(); } }, el("option", { value: "fit" }, "适合宽度"), READER_ZOOMS.map(value => el("option", { value: String(value) }, `${value}%`))); zoom.value = state.zoom;
+  const zoom = el("select", { class: "zoom-select", id: "reader-zoom", "aria-label": "原文页面缩放", onchange: event => readerSetZoom(event.target.value) }, el("option", { value: "fit" }, "适合宽度"), READER_ZOOMS.map(value => el("option", { value: String(value) }, `${value}%`))); zoom.value = state.zoom;
   const original = el("section", { class: "original-pane", "aria-label": "原版 PDF 连续阅读" },
     el("div", { class: "pane-bar" }, el("span", { class: "pane-label" }, icon("file"), "原版 PDF"), zoom,
       el("div", { class: "page-control" }, iconButton("chevron", "上一页", () => setReaderPage(state.readerPage - 1, true)), pageInput, ` / ${p.pages.length}`, iconButton("chevron", "下一页", () => setReaderPage(state.readerPage + 1, true))),
@@ -212,22 +213,16 @@ function renderReader() {
     if (typeof syncPreferenceControls === "function") syncPreferenceControls();
     if (next && !readerIsEditing()) scrollTranslationToPage(state.readerPage);
   }, event.target) });
-  const translationLabel = translationOf(p).done === 0 ? "英文原文" :
+  const translationLabel = readerRuntime.textLanguage === "original" || translationOf(p).done === 0 ? "英文原文" :
     translationOf(p).done < translationOf(p).total ? "译文与原文" : "中文译文";
   const trans = el("section", { class: "translation-pane", "aria-label": "论文文字与笔记" },
     el("div", { class: "pane-bar" }, el("span", { class: "pane-label", id: "reader-text-pane-label" }, icon("translate"), translationLabel),
       el("label", { class: "reader-sync-control", title: "滚动时按页联动，点击段落可精确定位" }, sync, "同步滚动"),
       el("span", { class: "selection-status", id: "reader-translation-status" }, `第 ${state.readerPage} 页`)),
-    el("div", { class: "translation-scroll", id: "translation-scroll", tabindex: "0", "aria-label": "译文或英文原文，可上下滚动",
-      onmouseup: () => void readerTranslateSelection(),
-      onkeyup: event => { if (event.key.startsWith("Arrow") || event.key === "Shift") void readerTranslateSelection(); } }));
+    el("div", { class: "translation-scroll", id: "translation-scroll", tabindex: "0", "aria-label": "译文或英文原文，可自由选择与复制" }));
   const tools = el("div", { class: "reader-tools" },
     button("论文简介", () => act(async () => { const id = state.reader.id; if (await closeReader()) await openDetail(id); }), "secondary", "file", { title: "论文信息、作者与来源" }),
     button("论文对话", () => togglePaperChat(), "secondary", "", { id: "reader-chat-toggle", "aria-expanded": "false", "aria-controls": "reader-paper-chat" }),
-    button("划线翻译", event => { readerRuntime.selectionTranslationMode = !readerRuntime.selectionTranslationMode;
-      event.currentTarget.setAttribute("aria-pressed", String(readerRuntime.selectionTranslationMode));
-      toast(readerRuntime.selectionTranslationMode ? "在右侧尚未翻译的英文正文中划选，即可即时翻译" : "划线翻译模式已关闭");
-    }, "secondary", "", { id: "reader-selection-translate", "aria-pressed": "false", title: "开启后，在右侧英文原文中划线即翻译" }),
     button("笔记", () => toggleReaderNotes(), "secondary", "edit", { id: "reader-notes-toggle", "aria-expanded": "false", "aria-controls": "reader-notes" }),
     button("全文翻译", event => act(() => translateAction(state.reader, ACTIVE_STATUSES.has(translationOf(state.reader).status)), event.currentTarget), "primary", "translate", { id: "reader-translate-button" }));
   const originalLink = safeUrl(p.original_url || `/media/${p.id}/original.pdf`);
@@ -235,12 +230,19 @@ function renderReader() {
   const divider = el("div", { class: "reader-divider", id: "reader-divider", role: "separator", tabindex: "0", "aria-label": "调整原文与译文比例", "aria-orientation": "vertical", "aria-valuemin": "30", "aria-valuemax": "70", "aria-controls": "original-scroll translation-scroll", title: "拖动调整比例；方向键微调，Enter 恢复均分" }, el("span", { "aria-hidden": "true" }));
   $("#reader-content").replaceChildren(
     el("div", { class: "reader-topbar" }, el("button", { class: "reader-back", onclick: () => void closeReader(), title: "返回文献库" }, icon("chevron"), "文献库"), el("div", { class: "reader-title", title: titleOf(p) }, titleOf(p)), tools),
-    el("div", { class: "reader-viewbar" }, modes, el("span", { class: "reader-layout-hint" }, "拖动分隔线调整阅读空间")),
+    el("div", { class: "reader-viewbar" }, modes,
+      el("div", { class: "reader-text-view-switch", role: "group", "aria-label": "右侧文字语言" },
+        button("英文原文", () => readerSetTextLanguage("original"), "secondary", "", { "data-text-language": "original", "aria-pressed": String(readerRuntime.textLanguage === "original") }),
+        button("译文", () => readerSetTextLanguage("auto"), "secondary", "", { "data-text-language": "auto", "aria-pressed": String(readerRuntime.textLanguage !== "original") })),
+      button("修订历史", () => readerTextList("history"), "secondary"),
+      button("待核对标记", () => readerTextList("annotations"), "secondary", "", { id: "reader-review-annotations", hidden: true }),
+      el("span", { id: "reader-selection-mode-hint", class: "reader-selection-mode-hint" }, "选中文字即可显示操作选项")),
     el("div", { class: "reader-workspace" }, el("div", { class: "reader-layout", id: "reader-layout" }, original, divider, trans), el("aside", { class: "reader-notes", id: "reader-notes", hidden: true, "aria-label": "论文笔记" }), el("aside", { class: "reader-paper-chat", id: "reader-paper-chat", hidden: true, "aria-label": "本篇论文对话" })),
     el("div", { class: "reader-bottom" }, el("span", { id: "reader-save-state", role: "status", "aria-live": "polite" }, "阅读位置自动保存"), el("a", { href: originalLink, target: "_blank", rel: "noopener noreferrer" }, "打开原 PDF ↗")));
   // Layout must be visible before computing page widths and scroll anchors.
   openDialog("#reader-dialog");
   readerApplyLayout(); drawOriginalPage(); renderTranslations(); updateReaderProgress(); readerBindScrolling(); readerBindDivider(divider); readerBindLifecycle();
+  if (typeof readerBindTextSelection === "function") readerBindTextSelection();
   const dialog = $("#reader-dialog");
   if (readerRuntime.boundDialog !== dialog) {
     dialog.addEventListener("close", () => { readerPersistDrafts(); readerDispose(); readerRestoreLibrary(); }); readerRuntime.boundDialog = dialog;
@@ -252,12 +254,13 @@ async function closeReader() {
   readerCachePosition(); readerPersistDrafts();
   const content = $("#reader-content"); content.inert = true;
   readerRuntime.closePromise = (async () => {
-    const results = await Promise.allSettled([readerSaveNotes(), readerSaveEditor()]);
+    const results = await Promise.allSettled([readerSaveNotes(), readerSaveEditor(), typeof readerFlushTextEditor === "function" ? readerFlushTextEditor() : Promise.resolve()]);
     results.push(...await Promise.allSettled([saveReadPage()]));
     const failed = results.some(result => result.status === "rejected");
     const preserved = readerPersistDrafts();
     if (failed && !preserved) { toast("保存失败，草稿也未能写入本机；请保留此窗口并重试。", "error", 8000); return false; }
-    if (failed) toast("暂未连接到文献库，未保存内容已留在本机草稿中。", "warn", 6500);
+    if (failed) toast("未保存内容已保留为本机草稿，请重新打开后核对。", "warn", 6500);
+    if (typeof readerReleaseTextUI === "function") readerReleaseTextUI();
     $("#reader-dialog").close(); readerRuntime.selectionTranslations.clear(); return true;
   })().finally(() => { content.inert = false; readerRuntime.closePromise = null; });
   return readerRuntime.closePromise;
@@ -275,7 +278,6 @@ function readerApplyLayout() {
   divider.setAttribute("aria-valuetext", `原文 ${Math.round(readerRuntime.split * 100)}%，译文 ${Math.round((1 - readerRuntime.split) * 100)}%`);
   divider.setAttribute("aria-orientation", typeof matchMedia === "function" && matchMedia("(max-width: 700px)").matches ? "horizontal" : "vertical");
   $$("[data-reader-mode]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.readerMode === readerRuntime.mode)));
-  $(".reader-layout-hint").hidden = readerRuntime.mode !== "parallel";
   const sync = $(".reader-sync-control"); if (sync) sync.hidden = readerRuntime.mode !== "parallel";
 }
 function readerPreserveLayout(change) {
@@ -334,6 +336,7 @@ function readerBindDivider(divider) {
 }
 function readerPersistDrafts() {
   let safe = true;
+  if (typeof readerTextDraft === "function") safe = readerTextDraft() && safe;
   const notes = readerRuntime.notes, editor = readerRuntime.editor;
   if (notes && notes.value !== notes.savedValue) safe = readerWriteLocal("notes", notes.id, { value: notes.value }) && safe;
   if (editor && editor.text.value !== editor.savedValue) safe = readerWriteLocal("block", editor.paperId, { blockId: editor.blockId, mode: editor.mode, value: editor.text.value }) && safe;
@@ -465,11 +468,40 @@ async function saveReadPage() {
   } finally { readerRuntime.savePromise = null; }
 }
 function scrollTranslationToPage(page) { readerScrollToNode($("#translation-scroll"), readerTranslationPage(page)); }
+function readerSetZoom(value) {
+  const zoom = value === "fit" ? "fit" : Number(value);
+  if (!readerScrollActive() || zoom !== "fit" && !READER_ZOOMS.includes(zoom) || zoom === state.zoom) return;
+  state.zoom = zoom;
+  const select = $("#reader-zoom"); if (select) select.value = String(zoom);
+  if (typeof syncSelectMenus === "function") syncSelectMenus();
+  drawOriginalPage(); readerQueuePositionSave();
+}
+function readerHandleZoomWheel(event, container) {
+  if (!event.ctrlKey || !event.cancelable || !Number.isFinite(event.deltaY) || !event.deltaY || !readerScrollActive()) return false;
+  // Cancel browser zoom, including at either limit, before changing reader content.
+  event.preventDefault();
+  const enlarge = event.deltaY < 0;
+  if (container.id === "original-scroll") {
+    const current = state.zoom === "fit" ? 100 : Number(state.zoom);
+    const next = enlarge ? READER_ZOOMS.find(value => value > current) : [...READER_ZOOMS].reverse().find(value => value < current);
+    if (next !== undefined) readerSetZoom(next);
+  } else {
+    const current = readerClamp(state.settings.reader_font_size, 14, 28, 18);
+    const next = readerClamp(current + (enlarge ? 1 : -1), 14, 28, 18);
+    if (next !== current) {
+      readerRuntime.resizeAnchor = readerCaptureAnchor($("#original-scroll"), ".reader-page-section");
+      readerRuntime.translationAnchor = readerCaptureAnchor(container, ".translation-block");
+      changePreference({ reader_font_size: next });
+    }
+  }
+  return true;
+}
 function readerBindScrolling() {
   const original = $("#original-scroll"), translated = $("#translation-scroll");
   for (const [container, side, frame] of [[original, "suppressLeftUntil", "leftFrame"], [translated, "suppressRightUntil", "rightFrame"]]) {
     const release = () => { readerRuntime[side] = 0; };
-    container.addEventListener("wheel", release, { passive: true }); container.addEventListener("touchstart", release, { passive: true }); container.addEventListener("pointerdown", release);
+    container.addEventListener("wheel", event => { if (!readerHandleZoomWheel(event, container)) release(); }, { passive: false });
+    container.addEventListener("touchstart", release, { passive: true }); container.addEventListener("pointerdown", release);
     container.addEventListener("keydown", event => { if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " "].includes(event.key)) release(); });
     container.addEventListener("scroll", () => {
         if (readerRuntime[frame]) return;
@@ -502,9 +534,10 @@ function readerBindScrolling() {
   }
 }
 
-function readerBlockSignature(b) { return JSON.stringify([b.text, b.translation, b.note, b.highlight, b.kind, b.is_formula, b.image_url, b.has_unparsed_math]); }
+function readerBlockSignature(b) { return JSON.stringify([b.text, b.text_override, b.translation, b.translation_needs_review, b.note, b.highlight, b.kind, b.is_formula, b.image_url, b.has_unparsed_math]); }
 function renderTranslations() {
   const p = state.reader, container = $("#translation-scroll"); if (!p || !container) return;
+  if (typeof readerTextProtected === "function" && readerTextProtected()) return;
   const anchorSelector = ".translation-block";
   const anchor = readerCaptureAnchor(container, anchorSelector);
   const structure = p.reading_structure || { sections: [{ id: "body", role: "body", label: "Main text", entries: p.blocks.map(b => ({ id: b.id, role: b.kind === "heading" ? "section_heading" : b.kind, source_ids: [b.id] })) }] };
@@ -519,7 +552,7 @@ function renderTranslations() {
     const fragment = document.createDocumentFragment();
     const busy = ["queued", "running"].includes(structure.status);
     if (structure.status !== "ready" && p.blocks.length) {
-      const message = busy ? "正在整理论文结构…可继续阅读" : structure.status === "needs_review" ? "语义校对未完成，当前按本地结构显示" : "已按论文结构整理";
+      const message = busy ? "正在整理论文结构…" : structure.status === "needs_review" ? "语义校对未完成，当前按本地结构显示" : "已按论文结构整理";
       fragment.append(el("div", { class: "reader-structure-message", title: structure.error || "语义校对只识别结构，保留英文原句；使用 Codex 订阅额度。" },
         el("span", {}, message), !busy ? button(structure.status === "needs_review" ? "重试整理" : "校对结构", event => act(async () => {
           const data = await api(`/api/papers/${encodeURIComponent(p.id)}/structure`, { method: "POST", body: {} });
@@ -539,6 +572,7 @@ function renderTranslations() {
   readerRestoreAnchor(container, anchorSelector, anchor);
   readerRuntime.translationAnchor = readerCaptureAnchor(container, ".translation-block");
   state.readerRenderedSignature = paperSignature(p);
+  if (typeof readerPaintAnnotations === "function") readerPaintAnnotations();
 }
 function renderStructuredParagraph(entry) {
   const sources = entry.source_ids.map(id => state.reader.blocks.find(b => b.id === id)).filter(Boolean);
@@ -553,28 +587,27 @@ function renderStructuredParagraph(entry) {
   node.classList.toggle("is-heading", entry.role === "section_heading");
   node.classList.toggle("is-title", entry.role === "title");
   node.classList.toggle("is-caption", entry.role === "caption");
-  node.classList.toggle("highlighted", sources.some(b => b.highlight));
   if (["abstract", "article_info"].includes(entry.role) && /^(abstract|articleinfo)$/i.test(asText(sources[0].text).replace(/\s/g, ""))) node.classList.add("is-heading");
   const text = $(".translated-text", node);
   if (text) {
     text.replaceChildren(...sources.flatMap((b, i) => [i ? document.createTextNode(" ") : null,
-      el("span", { class: `reader-source-text ${["authors", "affiliations"].includes(entry.role) && /^[\d,;*†‡\s]+$/.test(asText(b.text)) ? "is-marker" : ""}`, dataset: { sourceId: b.id, page: b.page } }, asText(b.translation || b.text))]).filter(Boolean));
+      readerTextSpan(b, { class: ["authors", "affiliations"].includes(entry.role) && /^[\d,;*†‡\s]+$/.test(asText(b.text)) ? "is-marker" : "" })]).filter(Boolean));
   }
-  for (const b of sources) if (b.id !== active.id && b.note) node.append(el("div", { class: "block-note" }, b.note));
   for (const b of sources) if (b.id !== active.id) for (const item of readerRuntime.selectionTranslations.get(b.id) || []) {
     node.append(el("div", { class: `selection-translation ${item.error ? "is-error" : ""}` },
       el("small", {}, item.source), el("p", {}, item.translation || item.error || "正在翻译…")));
   }
+  if (sources.some(b => b.translation_needs_review) && !$(".reader-source-review", node)) node.append(el("small", { class: "reader-source-review" }, "原文已修改，译文待核对"));
   return node;
 }
 function renderBlock(b) {
   readerRuntime.blockSignatures.set(b.id, readerBlockSignature(b));
-  const isFormula = Boolean(b.is_formula), isReference = b.kind === "reference", selected = state.selectedBlock === b.id;
-  const node = el("article", { class: `translation-block ${selected ? "selected" : ""} ${b.highlight ? "highlighted" : ""} ${!b.translation && !isFormula ? "untranslated" : ""} ${b.kind === "heading" ? "is-heading" : ""} ${b.kind === "caption" ? "is-caption" : ""}`, tabindex: "0", dataset: { blockId: b.id, page: b.page }, onclick: event => { if (event.target.closest("button, textarea, input, a, .block-editor")) return; if (readerRuntime.selectionTranslationMode && (Date.now() < readerRuntime.selectionClickUntil || window.getSelection()?.toString().trim())) return; selectBlock(event.target.closest("[data-source-id]")?.dataset.sourceId || b.id, false); }, onkeydown: event => { if (event.target === node && event.key === "Enter") { event.preventDefault(); selectBlock(b.id, false); } } });
+  const isFormula = Boolean(b.is_formula), isReference = b.kind === "reference";
+  const node = el("article", { class: `translation-block ${readerTextLanguage(b) === "original" && !isFormula ? "untranslated" : ""} ${b.kind === "heading" ? "is-heading" : ""} ${b.kind === "caption" ? "is-caption" : ""}`, dataset: { blockId: b.id, page: b.page } });
   if (isFormula && b.image_url) node.append(el("div", { class: "block-label" }, "公式 · 原文"), imageNode(b.image_url, { alt: "原文公式", class: "reader-formula-image" }));
   else {
     if (isReference || isFormula && !b.translation) node.append(el("div", { class: "block-label" }, isReference ? "参考文献 · 原文" : "公式 · 请对照原文"));
-    node.append(el("p", { class: "translated-text" }, asText(b.translation || b.text)));
+    node.append(el("p", { class: "translated-text" }, readerTextSpan(b)));
   }
   for (const item of readerRuntime.selectionTranslations.get(b.id) || []) {
     node.append(el("div", { class: `selection-translation ${item.error ? "is-error" : ""}` },
@@ -582,40 +615,8 @@ function renderBlock(b) {
   }
   if (b.is_table && b.image_url && !isFormula) node.append(imageNode(b.image_url, { alt: "原文表格", class: "reader-table-image" }));
   if (b.has_unparsed_math && !isFormula) node.append(el("div", { class: "block-label", title: "本段含无法可靠提取的数学字符，请查看左侧原 PDF。" }, "含公式 · 请核对原文"));
-  if (b.note) node.append(el("div", { class: "block-note" }, b.note));
-  if (selected) node.append(blockActions(b));
+  if (b.translation_needs_review) node.append(el("small", { class: "reader-source-review" }, "原文已修改，译文待核对"));
   return node;
-}
-async function readerTranslateSelection() {
-  if (!readerRuntime.selectionTranslationMode || !state.reader) return;
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || !selection.rangeCount) return;
-  const range = selection.getRangeAt(0);
-  const element = node => node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-  const start = element(range.startContainer)?.closest(".translated-text");
-  const end = element(range.endContainer)?.closest(".translated-text");
-  if (!start || start !== end || !$("#translation-scroll")?.contains(start)) return;
-  const blockNode = start.closest(".translation-block");
-  const sourceIds = blockNode?.dataset.sourceIds?.split(" ") || [blockNode?.dataset.blockId];
-  const block = state.reader.blocks.find(item => item.id === sourceIds[0]);
-  if (!block || block.translation || block.is_formula || block.kind === "reference") return;
-  if (sourceIds.some(id => state.reader.blocks.find(b => b.id === id)?.translation)) return;
-  const source = selection.toString().trim();
-  if (!source || source.length > 1200) { if (source) toast("一次最多划选 1200 个字符", "warn"); return; }
-  readerRuntime.selectionClickUntil = Date.now() + 400;
-  selection.removeAllRanges();
-  const paperId = state.reader.id;
-  const item = { source, translation: "", error: "" };
-  const entries = readerRuntime.selectionTranslations.get(block.id) || [];
-  entries.push(item); readerRuntime.selectionTranslations.set(block.id, entries);
-  refreshBlock(block.id);
-  try {
-    const result = await api(`/api/papers/${encodeURIComponent(paperId)}/ai/highlight`,
-      { method: "POST", body: { block_id: block.id, source_ids: sourceIds, text: source } });
-    if (state.reader?.id !== paperId) return;
-    item.translation = result.translation;
-  } catch (error) { if (state.reader?.id !== paperId) return; item.error = error.message; }
-  refreshBlock(block.id);
 }
 function blockActions(b) {
   return el("div", { class: "block-actions" }, button(b.highlight ? "取消高亮" : "高亮段落", event => act(async () => {
@@ -639,6 +640,7 @@ function selectBlock(id, scrollChinese) {
 }
 function findBlockNode(id) { return $$(".translation-block", $("#translation-scroll")).find(n => n.dataset.blockId === String(id) || n.dataset.sourceIds?.split(" ").includes(String(id))); }
 function refreshBlock(id) {
+  if (typeof readerTextProtected === "function" && readerTextProtected()) return;
   const b = state.reader?.blocks.find(x => x.id === id), node = findBlockNode(id); if (!b || !node) return;
   const container = $("#translation-scroll"), anchor = readerCaptureAnchor(container, ".translation-block");
   // Background updates must never replace an editor or the currently focused control.
@@ -667,7 +669,7 @@ function openBlockEditor(id, mode) {
   const draft = readerReadLocal("block", state.reader.id), restored = draft?.blockId === id && draft?.mode === mode && typeof draft.value === "string";
   const text = el("textarea", { value: restored ? draft.value : b[mode] || "", rows: mode === "translation" ? "7" : "4", placeholder: mode === "translation" ? "填写或修订本段中文翻译" : "填写段落批注", "aria-label": mode === "translation" ? "修订译文" : "段落批注" });
   const editor = el("form", { class: "block-editor" }, field(mode === "translation" ? "修订译文" : "段落批注", text)), save = el("button", { type: "submit", class: "button primary" }, "保存");
-  const hint = el("div", { class: "save-hint", role: "status" }, restored ? "已恢复本机草稿；保存后写入文献库" : "编辑时在本机保留草稿");
+  const hint = el("div", { class: "save-hint", role: "status" }, restored ? "已恢复本机草稿" : "");
   const entry = { paperId: state.reader.id, blockId: id, mode, text, node: editor, hint, savedValue: b[mode] || "", saving: null };
   readerRuntime.editor = entry;
   text.addEventListener("input", () => {
@@ -725,7 +727,7 @@ function toggleReaderNotes(force) {
     pane.hidden = !show; $("#reader-notes-toggle").setAttribute("aria-expanded", String(show));
     if (!show) { readerSaveNotes().catch(() => {}); return; }
     if (pane.childElementCount) return;
-    const textarea = el("textarea", { class: "notes-area", value: entry.value, placeholder: "记录思考、实验线索与待核对的问题…", "aria-label": "论文笔记", id: "reader-notes-text" });
+    const textarea = el("textarea", { class: "notes-area", value: entry.value, placeholder: "论文笔记", "aria-label": "论文笔记", id: "reader-notes-text" });
     textarea.addEventListener("input", () => {
       entry.value = textarea.value; entry.storageOk = readerWriteLocal("notes", entry.id, { value: entry.value });
       readerNotesHint(entry.storageOk ? "草稿已保存在本机，正在等待同步…" : "草稿暂未保存，请保持窗口打开");
@@ -733,7 +735,7 @@ function toggleReaderNotes(force) {
     });
     textarea.addEventListener("blur", () => { readerSaveNotes().catch(() => {}); });
     pane.append(el("div", { class: "section-heading" }, el("h3", {}, "论文笔记"), iconButton("close", "收起笔记", () => toggleReaderNotes(false))), textarea,
-      el("div", { class: "save-hint", id: "reader-notes-hint", role: "status" }, entry.value !== entry.savedValue ? "已恢复本机草稿" : "输入后自动保存"),
+      el("div", { class: "save-hint", id: "reader-notes-hint", role: "status" }, entry.value !== entry.savedValue ? "已恢复本机草稿" : ""),
       button("立即保存", event => act(readerSaveNotes, event.currentTarget), "secondary", "check"));
   });
   if (show) $("#reader-notes-text")?.focus({ preventScroll: true });
@@ -742,7 +744,7 @@ function updateReaderProgress() {
   if (!state.reader) return;
   const t = translationOf(state.reader), node = $("#reader-translate-button");
   const label = $("#reader-text-pane-label");
-  if (label) label.replaceChildren(icon("translate"), t.done === 0 ? "英文原文" : t.done < t.total ? "译文与原文" : "中文译文");
+  if (label) label.replaceChildren(icon("translate"), readerRuntime.textLanguage === "original" || t.done === 0 ? "英文原文" : t.done < t.total ? "译文与原文" : "中文译文");
   if (node) node.replaceChildren(icon(ACTIVE_STATUSES.has(t.status) ? "pause" : "translate"), ACTIVE_STATUSES.has(t.status) ? `暂停 · ${Math.round(ratio(state.reader))}%` : DONE_STATUSES.has(t.status) ? "已译完" : t.done ? "继续翻译" : "全文翻译");
 }
 async function refreshReader() {

@@ -383,14 +383,15 @@ def ask(con_factory,pid,doc,question):
 
 def translate_batch(con_factory,pid,doc,batch,config,thread_id,
                     on_thread=None,cancel_event=None):
+    from ezread.text_actions import original_text
     ids=[b['id'] for b in batch]
     schema={'type':'object','additionalProperties':False,
             'properties':{bid:{'type':'string'} for bid in ids},'required':ids}
     instruction=BASE+' 全文翻译任务：逐段完整英译中；不得摘要、漏译或合并段落；保留数值、单位、公式、引文和限定条件。只返回指定 JSON。'
     payload={'title':doc.get('title'),'abstract':doc.get('abstract','')[:3000],
-             'previous_terms':[{'source':b['text'][:300], 'translation':b['translation'][:300]}
+             'previous_terms':[{'source':original_text(b)[:300], 'translation':b['translation'][:300]}
                   for b in doc.get('blocks',[]) if b.get('translation')][:8],
-             'blocks':[{'id':b['id'],'page':b.get('page'),'text':b['text']} for b in batch]}
+             'blocks':[{'id':b['id'],'page':b.get('page'),'text':original_text(b)} for b in batch]}
     with CodexSession() as session:
         tid=_start_or_resume(session,thread_id,config,instruction,'{}')
         if on_thread: on_thread(tid)

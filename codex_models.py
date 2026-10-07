@@ -157,11 +157,12 @@ def _query(timeout=TIMEOUT):
     try:
         process = subprocess.Popen(
             [cli, 'app-server', '--stdio', '-c', 'forced_login_method="chatgpt"'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace',
             env=codex_bridge._environment(), **codex_bridge._flags())
     except OSError as exc:
         raise ModelError('无法启动官方 Codex 模型目录读取进程。', 'cli') from exc
+    diagnostics = codex_bridge._StartupDiagnostics(process)
     with _lock:
         _processes.add(process)
         already_closed = _closed
@@ -206,6 +207,13 @@ def _query(timeout=TIMEOUT):
                 value = messages.get(timeout=min(.2, max(.01, deadline - time.monotonic())))
             except queue.Empty:
                 if done.is_set():
+                    code = diagnostics.startup_code()
+                    if code == 'permissions':
+                        raise ModelError('Codex 运行目录不可写，请从正常的 EzRead 启动入口重新启动，或检查目录权限。', code)
+                    if code == 'auth':
+                        raise ModelError('无法读取模型目录，请在官方 Codex 中重新用 ChatGPT 账号登录。', code)
+                    if code == 'network':
+                        raise ModelError('无法连接官方模型目录，请检查网络后重新打开翻译设置。', code)
                     raise ModelError('Codex 未能返回模型目录，请检查官方 Codex 登录和运行目录权限。', 'cli')
                 continue
             if value.get('id') != request_id:

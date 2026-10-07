@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#285448">
   <!-- Keep an invisible title so the browser app window does not fall back to showing its URL. -->
   <title>&#8203;</title>
-  <!-- The browser owns the real taskbar icon; only the native caption is hidden. -->
+  <!-- Real web favicon; the desktop executable owns its native taskbar icon. -->
   <link rel="icon" type="image/png" href="/static/ezread-icon.png?v=20261005-taskbar2">
   <link rel="shortcut icon" type="image/x-icon" href="/static/ezread.ico?v=20261005-taskbar2">
   <link rel="stylesheet" href="/static/style.css">
@@ -15,22 +15,27 @@
   <link rel="stylesheet" href="/static/redesign.css">
   <link rel="stylesheet" href="/static/surfaces.css?v=20261005">
   <script src="/static/reader.js" defer></script>
+  <script src="/static/reader-text.js" defer></script>
   <script src="/static/paper-chat.js" defer></script>
   <script src="/static/translation-ui.js" defer></script>
   <script src="/static/settings-ui.js" defer></script>
+  <script src="/static/journal-catalogue-ui.js" defer></script>
   <script src="/static/core/state.js" defer></script>
   <script src="/static/core/dom.js" defer></script>
   <script src="/static/core/format.js" defer></script>
   <script src="/static/core/storage.js" defer></script>
   <script src="/static/core/preferences.js" defer></script>
   <script src="/static/core/api.js" defer></script>
+  <script src="/static/core/select.js" defer></script>
   <script src="/static/library/actions.js" defer></script>
   <script src="/static/library/filters.js" defer></script>
   <script src="/static/library/cards.js" defer></script>
   <script src="/static/library/import.js" defer></script>
+  <script src="/static/publication-ui.js" defer></script>
   <script src="/static/detail/paper.js" defer></script>
   <script src="/static/detail/actions.js" defer></script>
   <script src="/static/tasks/status.js" defer></script>
+  <script src="/static/desktop.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -64,7 +69,7 @@
     <aside class="sidebar" id="sidebar" aria-label="侧边栏">
       <div class="brand"><img class="brand-icon" width="40" height="40" src="/static/ezread-icon.png" alt=""><span>EzRead</span></div>
       <div class="sidebar-scroll">
-      <label class="search-box"><svg class="icon"><use href="#i-search"/></svg><input id="search" type="search" autocomplete="off" placeholder="搜索论文…" aria-label="搜索论文"><kbd>Ctrl K</kbd></label>
+      <label class="search-box"><svg class="icon"><use href="#i-search"/></svg><input id="search" type="search" autocomplete="off" placeholder="搜索论文…" aria-label="搜索论文"></label>
       <div class="library-tools" id="library-tools">
         <h2 class="nav-heading">筛选</h2>
         <div class="filter-group" role="group" aria-label="筛选条件">
@@ -83,16 +88,15 @@
         </div>
         <h2 class="nav-heading sort-heading">排序</h2>
         <div class="sidebar-sort" role="group" aria-label="论文排序">
-          <div class="sort-row"><span>导入时间</span><button type="button" data-sort-key="imported" data-sort-direction="desc" title="最近导入的论文排在前面">最新导入</button><button type="button" data-sort-key="imported" data-sort-direction="asc" title="最早导入的论文排在前面">最早导入</button></div>
-          <div class="sort-row"><span>发表时间</span><button type="button" data-sort-key="year" data-sort-direction="desc" title="发表年份较新的论文排在前面；缺少年份的放在末尾">最新发表</button><button type="button" data-sort-key="year" data-sort-direction="asc" title="发表年份较早的论文排在前面；缺少年份的放在末尾">最早发表</button></div>
-          <div class="sort-row"><span>最近阅读</span><button type="button" data-sort-key="recent" data-sort-direction="desc" title="最后一次阅读时间较近的论文排在前面；没有阅读记录的放在末尾">最近读过</button><button type="button" data-sort-key="recent" data-sort-direction="asc" title="距离上次阅读最久的论文排在前面；没有阅读记录的放在末尾">最久未读</button></div>
+          <div class="sort-row"><span>导入时间</span><button type="button" data-sort-key="imported" data-sort-direction="desc">最新导入</button><button type="button" data-sort-key="imported" data-sort-direction="asc">最早导入</button></div>
+          <div class="sort-row"><span>发表时间</span><button type="button" data-sort-key="year" data-sort-direction="desc">最新发表</button><button type="button" data-sort-key="year" data-sort-direction="asc">最早发表</button></div>
+          <div class="sort-row"><span>最近阅读</span><button type="button" data-sort-key="recent" data-sort-direction="desc">最近读过</button><button type="button" data-sort-key="recent" data-sort-direction="asc">最久未读</button></div>
           <select id="sort" aria-label="论文排序" hidden><option value="recent">最近阅读</option><option value="imported">导入时间</option><option value="year">发表时间</option></select>
           <input id="sort-direction" type="hidden" value="desc">
         </div>
       </div>
-      <button id="import-top" class="button secondary sidebar-action" title="导入 PDF" aria-label="导入 PDF"><svg class="icon"><use href="#i-upload"/></svg><span>导入 PDF</span></button>
-      <div class="nav-heading collection-heading"><span>主要合集</span><button id="new-collection" class="icon-button" title="添加主要合集" aria-label="添加主要合集"><svg class="icon"><use href="#i-plus"/></svg></button></div>
-      <p class="collection-drag-hint">可将论文卡片拖入合集</p>
+      <button id="import-top" class="button secondary sidebar-action" aria-label="导入 PDF"><svg class="icon"><use href="#i-upload"/></svg><span>导入 PDF</span></button>
+      <div class="nav-heading collection-heading"><span>主要合集</span><button id="new-collection" class="icon-button" aria-label="添加主要合集"><svg class="icon"><use href="#i-plus"/></svg></button></div>
       <button class="nav-item" data-view="favorites"><svg class="icon"><use href="#i-star"/></svg>我的收藏</button>
       <div id="collections-nav" class="collections-nav"></div>
       </div>
@@ -107,13 +111,13 @@
         <div id="active-collection" class="collection-banner hidden"></div>
         <div class="bulkbar hidden" id="bulkbar" role="toolbar" aria-label="多选操作"></div>
         <div id="paper-grid" class="paper-grid" aria-live="polite"></div>
-        <div id="empty-state" class="empty-state hidden"><div class="empty-illustration"><div class="empty-paper back"></div><div class="empty-paper front"><svg class="icon"><use href="#i-image"/></svg><i></i><i></i></div><span>+</span></div><h2>文献库为空</h2><p>拖入 PDF，或在左侧点击导入 PDF。</p></div>
-        <footer class="library-footer" aria-label="期刊等级颜色图例"><div class="if-legend" id="if-legend" title="按 2025 年固定名单显示期刊等级"></div></footer>
+        <div id="empty-state" class="empty-state hidden"><div class="empty-illustration"><div class="empty-paper back"></div><div class="empty-paper front"><svg class="icon"><use href="#i-image"/></svg><i></i><i></i></div><span>+</span></div><h2>文献库为空</h2></div>
+        <footer class="library-footer" aria-label="期刊等级颜色图例"><div class="if-legend" id="if-legend"></div></footer>
       </section>
     </main>
   </div>
   <dialog id="queue-dialog" class="queue-dialog" aria-labelledby="queue-dialog-title">
-    <header class="queue-dialog-heading"><div><h2 id="queue-dialog-title">翻译任务</h2><p>查看进度，暂停或继续翻译。</p></div><div class="queue-dialog-actions"><button id="refresh-status" class="button secondary">刷新状态</button><button id="queue-close" class="icon-button" aria-label="关闭翻译任务" autofocus><svg class="icon"><use href="#i-close"/></svg></button></div></header>
+    <header class="queue-dialog-heading"><div><h2 id="queue-dialog-title">翻译任务</h2></div><div class="queue-dialog-actions"><button id="refresh-status" class="button secondary">刷新状态</button><button id="queue-close" class="icon-button" aria-label="关闭翻译任务" autofocus><svg class="icon"><use href="#i-close"/></svg></button></div></header>
     <div id="queue-view" class="queue-dialog-scroll"><div id="codex-status" class="status-panel"></div><div id="usage-status" class="usage-panel"></div><div id="queue-list"></div></div>
   </dialog>
   <div id="filter-backdrop" class="filter-backdrop hidden" aria-hidden="true"></div>
@@ -122,8 +126,8 @@
   </section>
   <input type="file" id="file-input" multiple accept=".pdf,application/pdf" hidden>
   <div id="card-context-menu" class="card-context-menu hidden" role="menu" aria-label="论文操作"></div>
-  <div class="drop-overlay hidden" id="drop-overlay"><div><svg class="icon"><use href="#i-upload"/></svg><h2>松开鼠标导入 PDF</h2><p>可一次导入多篇论文</p></div></div>
-  <div class="import-progress hidden" id="import-progress"><span class="spinner"></span><div><strong id="import-progress-title">正在导入论文</strong><small>提取文字与图片，生成你的文献卡片…</small></div></div>
+  <div class="drop-overlay hidden" id="drop-overlay"><div><svg class="icon"><use href="#i-upload"/></svg><h2>松开鼠标导入 PDF</h2></div></div>
+  <div class="import-progress hidden" id="import-progress"><span class="spinner"></span><div><strong id="import-progress-title">正在导入论文</strong></div></div>
   <dialog id="detail-dialog" class="detail-dialog"><div id="detail-content"></div></dialog>
   <dialog id="reader-dialog" class="reader-dialog"><div id="reader-content"></div></dialog>
   <dialog id="edit-dialog" class="form-dialog"><div id="edit-content"></div></dialog>
@@ -131,7 +135,8 @@
   <dialog id="settings-dialog" class="form-dialog"><div id="settings-content"></div></dialog>
   <dialog id="move-collection-dialog" class="form-dialog small-dialog"><div id="move-collection-content"></div></dialog>
   <dialog id="translation-dialog" class="form-dialog"><div id="translation-content"></div></dialog>
-  <dialog id="collection-dialog" class="form-dialog small-dialog"><form id="collection-form"><div class="dialog-heading"><div><h2>新建主题集合</h2></div><button type="button" class="icon-button" data-close="collection-dialog" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button></div><label class="field">集合名称<input id="collection-name" maxlength="80" required placeholder="例如：触觉夹爪"></label><p class="muted small">可将论文卡片拖入合集，或使用多选栏的“移入合集”。</p><div class="form-actions"><button type="button" class="button secondary" data-close="collection-dialog">取消</button><button class="button primary" type="submit">创建集合</button></div></form></dialog>
-  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <dialog id="publication-dialog" class="form-dialog publication-dialog" aria-labelledby="publication-dialog-title" aria-describedby="publication-dialog-description"><div id="publication-content"></div></dialog>
+  <dialog id="collection-dialog" class="form-dialog small-dialog"><form id="collection-form"><div class="dialog-heading"><div><h2>新建主题集合</h2></div><button type="button" class="icon-button" data-close="collection-dialog" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button></div><label class="field">集合名称<input id="collection-name" maxlength="80" required placeholder="集合名称"></label><div class="form-actions"><button type="button" class="button secondary" data-close="collection-dialog">取消</button><button class="button primary" type="submit">创建集合</button></div></form></dialog>
+  <div id="toasts" class="toasts" popover="manual" role="status" aria-live="polite" aria-atomic="false"></div>
 </body>
 </html>

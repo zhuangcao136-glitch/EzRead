@@ -100,11 +100,12 @@ def _query(timeout=TIMEOUT):
         raise UsageError('未找到官方 Codex，请先安装并登录 ChatGPT 账号。', 'missing_cli')
     try:
         process = subprocess.Popen([cli, 'app-server', '--stdio', '-c', 'forced_login_method="chatgpt"'],
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, encoding='utf-8', errors='replace',
                                    env=codex_bridge._environment(), **codex_bridge._flags())
     except OSError as exc:
         raise UsageError('无法启动官方 Codex 用量读取进程。', 'cli') from exc
+    diagnostics = codex_bridge._StartupDiagnostics(process)
     with _lock:
         _processes.add(process)
     messages = queue.Queue(maxsize=128)
@@ -143,6 +144,13 @@ def _query(timeout=TIMEOUT):
                 value = messages.get(timeout=min(.2, max(.01, deadline - time.monotonic())))
             except queue.Empty:
                 if done.is_set():
+                    code = diagnostics.startup_code()
+                    if code == 'permissions':
+                        raise UsageError('Codex 运行目录不可写，请从正常的 EzRead 启动入口重新启动，或检查目录权限。', code)
+                    if code == 'auth':
+                        raise UsageError('无法读取订阅用量，请在官方 Codex 中重新用 ChatGPT 账号登录。', code)
+                    if code == 'network':
+                        raise UsageError('无法连接订阅用量服务，请检查网络后重新打开翻译设置。', code)
                     raise UsageError('Codex 进程未能返回用量，请检查官方 Codex 是否可以正常登录。', 'cli')
                 continue
             if value.get('id') != request_id:

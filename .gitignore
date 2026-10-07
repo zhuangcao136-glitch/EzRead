@@ -3,6 +3,8 @@ work/
 output/
 AGENTS.local.md
 .venv/
+.deps/
+desktop/bin/
 venv/
 node_modules/
 .pytest_cache/
@@ -20,6 +22,7 @@ __pycache__/
 *.pyc
 *.log
 *.sqlite3
+!assets/dictionaries/ecdict.sqlite3
 *.sqlite3-*
 *.db
 *.db-*

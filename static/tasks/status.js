@@ -1,5 +1,7 @@
-async function refreshStatus() {
-  state.status = await api("/api/status"); if (state.status.usage) state.usage = state.status.usage; renderQueue(); renderUsagePanels(); return state.status;
+let usageRequest = null;
+async function refreshStatus(force = false) {
+  state.status = await api(`/api/status${force ? "?refresh=1" : ""}`); if (state.status.usage) state.usage = state.status.usage;
+  $("#settings-codex-status")?.replaceChildren(codexStatusPanel()); renderQueue(); renderUsagePanels(); return state.status;
 }
 function windowLabel(window) {
   const minutes = Number(window.window_minutes);
@@ -8,12 +10,12 @@ function windowLabel(window) {
 }
 function timeLabel(value, seconds = false) { if (value === null || value === undefined || value === "") return "未知"; const date = new Date(seconds ? Number(value) * 1000 : value); return Number.isNaN(date.getTime()) ? "未知" : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }); }
 function percentage(value) { return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null; }
-function usagePanel() {
+function usagePanel(showRefresh = true) {
   const usage = state.usage, status = usage?.status || "loading";
-  const panel = el("div", { class: status === "stale" ? "usage-stale" : "" }, el("div", { class: "usage-heading" }, el("h3", {}, "账户共享 Codex 用量"), button(usageBusy || usage?.refreshing ? "正在刷新…" : "刷新用量", event => act(() => loadUsage(true), event.currentTarget), "secondary", "clock", { disabled: usageBusy || usage?.refreshing })), el("p", { class: "usage-note" }, "用量由账户中的 Codex 任务共享，不是本篇论文的独立额度。"));
-  if (!usage || status === "loading" && !usage.buckets?.length) panel.append(el("p", { class: "usage-note" }, "正在读取用量；文献库可继续使用。"));
-  if (status === "stale") panel.append(el("p", { class: "usage-note" }, "当前展示上次成功读取的记录，可能已过期。"));
-  if (status === "unavailable") panel.append(el("p", { class: "usage-note" }, "暂时无法读取用量。已有文献与译文仍可阅读。"));
+  const panel = el("div", { class: status === "stale" ? "usage-stale" : "" }, el("div", { class: "usage-heading" }, el("h3", {}, "账户共享 Codex 用量"), showRefresh ? button(usageBusy || usage?.refreshing ? "正在刷新…" : "刷新用量", event => act(() => loadUsage(true), event.currentTarget), "secondary", "clock", { disabled: usageBusy || usage?.refreshing }) : null));
+  if (!usage || status === "loading" && !usage.buckets?.length) panel.append(el("p", { class: "usage-note" }, "正在读取用量…"));
+  if (status === "stale") panel.append(el("p", { class: "usage-note" }, "当前为上次成功读取的用量记录"));
+  if (status === "unavailable") panel.append(el("p", { class: "usage-note" }, "暂时无法读取用量"));
   if (usage?.error) panel.append(el("p", { class: "error-text" }, usage.error));
   for (const bucket of usage?.buckets || []) {
     const windows = (bucket.windows || []).map(window => {
@@ -28,18 +30,22 @@ function usagePanel() {
   if (usage) panel.append(el("p", { class: "usage-stamp" }, `${status === "stale" ? "上次成功更新" : "更新"}：${timeLabel(usage.updated_at)}${usage.checked_at ? ` · 最近检查：${timeLabel(usage.checked_at)}` : ""}`));
   return panel;
 }
-function renderUsagePanels() { ["#usage-status", "#settings-usage"].forEach(selector => { const node = $(selector); if (node) node.replaceChildren(usagePanel()); }); }
-async function loadUsage(force = false) {
-  if (usageBusy) return; usageBusy = true; renderUsagePanels();
-  try { state.usage = await api(`/api/usage${force ? "?refresh=1" : ""}`); }
-  catch (error) { state.usage = { ...(state.usage || {}), status: state.usage?.buckets?.length ? "stale" : "unavailable", error: `读取用量失败：${error.message}` }; }
-  finally { usageBusy = false; renderUsagePanels(); }
+function renderUsagePanels() { ["#usage-status", "#settings-usage"].forEach(selector => { const node = $(selector); if (node) node.replaceChildren(usagePanel(selector !== "#settings-usage")); }); }
+function loadUsage(force = false) {
+  if (usageRequest) return usageRequest;
+  usageBusy = true; renderUsagePanels();
+  usageRequest = (async () => {
+    try { state.usage = await api(`/api/usage${force ? "?refresh=1" : ""}`); }
+    catch (error) { state.usage = { ...(state.usage || {}), status: state.usage?.buckets?.length ? "stale" : "unavailable", error: `读取用量失败：${error.message}` }; }
+    finally { usageBusy = false; renderUsagePanels(); }
+  })().finally(() => { usageRequest = null; });
+  return usageRequest;
 }
 function codexStatusPanel() {
   const s = state.status?.codex;
-  if (!s) return el("div", {}, el("h3", {}, "正在检查 Codex 登录状态…"), el("p", {}, "只使用 ChatGPT 订阅内的 Codex 用量。"));
+  if (!s) return el("div", {}, el("h3", {}, "正在检查 Codex 登录状态…"));
   const ready = Boolean(s.available && s.authenticated);
-  return el("div", {}, el("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "15px", marginBottom: "8px" } }, el("h3", {}, "ChatGPT 订阅 · Codex"), el("span", { class: `connection-state ${ready ? "" : "offline"}` }, el("i", { class: "status-dot" }), ready ? "已连接" : s.available ? "需要登录" : "尚未就绪")), el("p", {}, s.message || (ready ? "已连接本机 Codex。额度不足或网络中断时，已保存的译文不会丢失。" : "请先安装官方 Codex，并使用 ChatGPT 账号登录；本工具不使用其他翻译 API。")), !ready ? el("p", { class: "small", style: { marginTop: "9px" } }, "完成登录后，点击“刷新状态”再次检查。") : null, s.login_command ? el("pre", {}, s.login_command) : null);
+  return el("div", {}, el("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "15px", marginBottom: "8px" } }, el("h3", {}, "ChatGPT 订阅 · Codex"), el("span", { class: `connection-state ${ready ? "" : "offline"}` }, el("i", { class: "status-dot" }), ready ? "已连接" : s.available ? "需要登录" : "尚未就绪")), el("p", {}, ready ? "" : s.message || (s.available ? "Codex 尚未登录" : "Codex 不可用")), s.login_command ? el("pre", {}, s.login_command) : null);
 }
 function renderQueue() {
   const panel = $("#codex-status"); if (!panel) return; panel.replaceChildren(codexStatusPanel());
@@ -48,8 +54,8 @@ function renderQueue() {
   $("#queue-list").replaceChildren(...(jobs.length ? jobs.map(p => {
     const t = translationOf(p), active = ACTIVE_STATUSES.has(t.status);
     const extras = [p.summarize_status ? `研究速览：${taskStatusName(p.summarize_status)}` : "", p.team_status ? `团队背景：${taskStatusName(p.team_status)}` : ""].filter(Boolean).join(" · ");
-    return el("article", { class: "queue-item" }, imageNode(p.cover_url, { class: "queue-image", alt: "论文封面" }), el("div", { class: "queue-item-body" }, el("h3", {}, titleOf(p)), el("p", {}, `${t.mode === "retranslate" ? "重译 · " : ""}${statusName(t.status)} · 已保存 ${t.done || 0} / ${t.total || 0} 段 · ${Math.round(ratio(p))}%`), el("p", { class: "queue-model" }, `本次任务：${configLabel(t.config)}`), t.current_mixed ? el("p", { class: "small muted" }, "当前译文含历史或不同配置的内容。") : null, t.has_staging ? el("p", {}, "原译文仍可阅读，重译完成后统一切换。") : null, el("div", { class: "progress-track" }, el("div", { class: "progress-fill", style: { width: `${ratio(p)}%` } })), extras ? el("p", { style: { marginTop: "5px" } }, extras) : null, t.error || p.summarize_error || p.team_error ? el("p", { class: "error-text", style: { marginTop: "6px" } }, asText(t.error || p.summarize_error || p.team_error)) : null), el("div", { class: "queue-actions" }, button("阅读", () => act(() => openReader(p.id)), "secondary", "book"), button(active ? "暂停" : DONE_STATUSES.has(t.status) ? "重新翻译" : "继续 / 配置", event => act(() => translateAction(p, active), event.currentTarget), active ? "secondary" : "subtle", active ? "pause" : "translate"), button("译文版本", event => act(() => openTranslationVersions(p), event.currentTarget), "secondary", "clock")));
-  }) : [el("div", { class: "no-results" }, icon("translate"), el("h3", { style: { marginTop: "15px" } }, "还没有翻译任务"), el("p", { class: "small" }, "打开一篇论文，点击“全文翻译”开始。"), button("浏览文献库", () => setView("all"), "subtle", "", { style: { marginTop: "18px" } }))]));
+    return el("article", { class: "queue-item" }, imageNode(p.cover_url, { class: "queue-image", alt: "论文封面" }), el("div", { class: "queue-item-body" }, el("h3", {}, titleOf(p)), el("p", {}, `${t.mode === "retranslate" ? "重译 · " : ""}${statusName(t.status)} · 已保存 ${t.done || 0} / ${t.total || 0} 段 · ${Math.round(ratio(p))}%`), el("p", { class: "queue-model" }, `本次任务：${configLabel(t.config)}`), t.current_mixed ? el("p", { class: "small muted" }, "当前译文含历史或不同配置的内容。") : null, t.has_staging ? el("p", {}, "重译中 · 当前显示原译文") : null, el("div", { class: "progress-track" }, el("div", { class: "progress-fill", style: { width: `${ratio(p)}%` } })), extras ? el("p", { style: { marginTop: "5px" } }, extras) : null, t.error || p.summarize_error || p.team_error ? el("p", { class: "error-text", style: { marginTop: "6px" } }, asText(t.error || p.summarize_error || p.team_error)) : null), el("div", { class: "queue-actions" }, button("阅读", () => act(() => openReader(p.id)), "secondary", "book"), button(active ? "暂停" : DONE_STATUSES.has(t.status) ? "重新翻译" : "继续 / 配置", event => act(() => translateAction(p, active), event.currentTarget), active ? "secondary" : "subtle", active ? "pause" : "translate"), button("译文版本", event => act(() => openTranslationVersions(p), event.currentTarget), "secondary", "clock")));
+  }) : [el("div", { class: "no-results" }, icon("translate"), el("h3", { style: { marginTop: "15px" } }, "还没有翻译任务"), button("浏览文献库", () => setView("all"), "subtle", "", { style: { marginTop: "18px" } }))]));
   renderUsagePanels();
 }
 
@@ -61,5 +67,5 @@ async function createCollection(name) {
   if (!name.trim()) return;
   const collections = [...new Set([...allCollections(), name.trim()])];
   state.settings = await api("/api/settings", { method: "PATCH", body: { collections } }); state.collections = collections;
-  $("#collection-name").value = ""; closeDialog("#collection-dialog"); setView("collection", name.trim()); toast("合集已创建，可将论文卡片拖入，或使用多选栏移入合集");
+  $("#collection-name").value = ""; closeDialog("#collection-dialog"); setView("collection", name.trim()); toast("合集已创建");
 }

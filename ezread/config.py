@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Mapping
 
-VERSION = '3.3.1'
+VERSION = '3.4.1'
 _LEGACY_ENV = {
     'EZREAD_DATA_DIR': 'TUDU_DATA_DIR',
     'EZREAD_CODEX_PATH': 'TUDU_CODEX_PATH',

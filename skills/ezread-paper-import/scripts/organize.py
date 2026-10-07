@@ -3,11 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import unicodedata
 from pathlib import Path
 
 VERSION = 1
-PENDING_COLLECTION = '待分类'
 ROLES = ('title', 'authors', 'affiliations', 'article_info', 'abstract',
          'section_heading', 'paragraph', 'caption', 'table', 'equation', 'reference', 'furniture')
 FRONT = ('title', 'authors', 'affiliations', 'article_info', 'abstract')
@@ -259,57 +257,12 @@ def validate_roles(doc, selected, result):
     return roles
 
 
-def collection_key(name):
-    return re.sub(r'[\W_]+', '', unicodedata.normalize('NFKC', str(name)).casefold())
-
-
-def collection_context(names, docs):
-    """Describe existing topics using a few assigned papers, not full texts."""
-    result, seen = [], set()
-    for name in sorted(set(names)):
-        key = collection_key(name)
-        if not key or key == collection_key(PENDING_COLLECTION) or key in seen:
-            continue
-        seen.add(key)
-        examples = [{'title': str(d.get('title', ''))[:250], 'tags': d.get('tags', [])[:8]}
-                    for d in docs if not d.get('deleted') and collection_key(d.get('collection', '')) == key][:3]
-        result.append({'name': name, 'examples': examples})
-    context = {'collections': result}
-    if len(json.dumps(context, ensure_ascii=False)) > 40000:
-        raise ValueError('合集信息过多，请手动归类；未删减候选后盲目新建合集。')
-    return context
-
-
-def validate_collection(context, suggestion, evidence_ids=None):
-    if not isinstance(suggestion, dict) or suggestion.get('mode') not in ('reuse', 'create', 'uncertain'):
-        raise ValueError('未返回有效的主题归类结果。')
-    mode, name = suggestion['mode'], suggestion.get('name')
-    reason, evidence = suggestion.get('reason'), suggestion.get('evidence_ids')
-    if not isinstance(name, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
-        raise ValueError('主题名称或归类依据无效。')
-    if not isinstance(evidence, list) or any(not isinstance(x, str) for x in evidence):
-        raise ValueError('主题归类缺少源文依据。')
-    if evidence_ids is not None and (set(evidence) - set(evidence_ids) or mode != 'uncertain' and not evidence):
-        raise ValueError('主题归类引用了未知或空的源文依据。')
-    name = name.strip()
-    existing = {collection_key(c['name']): c['name'] for c in context['collections']}
-    if mode == 'uncertain':
-        name = PENDING_COLLECTION
-    elif collection_key(name) in existing:
-        mode, name = 'reuse', existing[collection_key(name)]
-    elif mode == 'reuse':
-        raise ValueError('模型选择的已有合集不存在。')
-    elif not 2 <= len(name) <= 40 or not collection_key(name) or collection_key(name) == collection_key(PENDING_COLLECTION) or re.search(r'[\x00-\x1f<>]', name):
-        raise ValueError('新合集名称无效。')
-    return {'mode': mode, 'name': name, 'reason': reason.strip(), 'evidence_ids': list(dict.fromkeys(evidence))}
-
-
-def refine(doc, config, *, runner=None, cancel_event=None, collection_context=None):
+def refine(doc, config, *, runner=None, cancel_event=None):
     if runner is None:
         import codex_bridge
         runner = codex_bridge._run_json
     selected = candidates(doc)
-    if not selected and collection_context is None:
+    if not selected:
         return organize(doc)
     root = Path(__file__).resolve().parents[1]
     instruction = ((root / 'SKILL.md').read_text(encoding='utf-8') + '\n\n' +
@@ -318,36 +271,12 @@ def refine(doc, config, *, runner=None, cancel_event=None, collection_context=No
         'roles': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
         'required': ['id', 'role'], 'properties': {'id': {'type': 'string'},
         'role': {'type': 'string', 'enum': list(ROLES)}}}}}}
-    data = {'candidates': selected}
-    evidence_ids = [b['id'] for b in selected]
-    if collection_context is not None:
-        instruction += '\n\n' + (root / 'references' / 'collections.md').read_text(encoding='utf-8')
-        metadata = {k: str(doc.get(k, ''))[:6500] for k in ('title', 'abstract') if doc.get(k)}
-        evidence_ids = list(dict.fromkeys([*evidence_ids, *metadata]))
-        data.update(paper=metadata, **collection_context)
-        schema['required'].append('collection')
-        schema['properties']['collection'] = {'type': 'object', 'additionalProperties': False,
-            'required': ['mode', 'name', 'reason', 'evidence_ids'], 'properties': {
-                'mode': {'type': 'string', 'enum': ['reuse', 'create', 'uncertain']},
-                'name': {'type': 'string'}, 'reason': {'type': 'string'},
-                'evidence_ids': {'type': 'array', 'items': {'type': 'string', 'enum': evidence_ids}}}}
-    response = runner(instruction, data, schema, timeout=240,
+    response = runner(instruction, {'candidates': selected}, schema, timeout=240,
                       cancel_event=cancel_event, **config)
     roles = infer_roles(doc)
-    try:
-        roles.update(validate_roles(doc, selected, response))
-        result = organize(doc, roles)
-        result.update(method='local+ai', status='ready', model_config=dict(config))
-    except ValueError as exc:
-        if collection_context is None:
-            raise
-        result = organize(doc)
-        result.update(status='needs_review', error=str(exc), model_config=dict(config))
-    if collection_context is not None:
-        try:
-            result['collection_plan'] = validate_collection(collection_context, response.get('collection'), evidence_ids)
-        except ValueError as exc:
-            result['collection_error'] = str(exc)
+    roles.update(validate_roles(doc, selected, response))
+    result = organize(doc, roles)
+    result.update(method='local+ai', status='ready', model_config=dict(config))
     return result
 
 
