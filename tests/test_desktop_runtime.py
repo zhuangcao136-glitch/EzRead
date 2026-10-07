@@ -16,7 +16,12 @@ class DesktopRuntimeTests(unittest.TestCase):
             for name in ('EzRead.Desktop.exe', 'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll'):
                 (binary / name).touch()
             command = desktop_runtime.shell_command(root, root / 'private data', 'http://127.0.0.1:47831')
-            self.assertEqual(command, [str(binary / 'EzRead.Desktop.exe'), '--app-root', str(root), '--data-dir', str(root / 'private data'), '--url', 'http://127.0.0.1:47831'])
+            # Windows TEMP may use an 8.3 alias; the launcher uses canonical paths.
+            expected_root = root.resolve()
+            expected_data = (root / 'private data').resolve()
+            self.assertEqual(command, [str(expected_root / 'desktop' / 'bin' / 'EzRead.Desktop.exe'),
+                                      '--app-root', str(expected_root), '--data-dir', str(expected_data),
+                                      '--url', 'http://127.0.0.1:47831'])
 
     def test_missing_dll_does_not_fall_back_to_browser(self):
         with tempfile.TemporaryDirectory() as folder:
