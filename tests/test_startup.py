@@ -28,6 +28,7 @@ class StartupTests(unittest.TestCase):
                 process = subprocess.Popen([sys.executable, str(ROOT / 'server.py'), '--port', str(port)],
                     cwd=ROOT, env=env, stdout=log, stderr=log,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                worker_pid = process.pid
                 try:
                     base = f'http://127.0.0.1:{port}'
                     deadline = time.monotonic() + 10
@@ -42,9 +43,16 @@ class StartupTests(unittest.TestCase):
                         except (OSError, urllib.error.URLError):
                             time.sleep(.05)
                     self.assertIsNotNone(health)
-                    self.assertEqual(health['pid'], process.pid)
                     self.assertEqual(Path(health['app_root']).resolve(), ROOT.resolve())
                     self.assertEqual(Path(health['data_dir']).resolve(), data.resolve())
+                    if os.name == 'nt' and sys.prefix != sys.base_prefix:
+                        # The Windows venv redirector has its own PID. Only use the
+                        # worker PID after validating this test's exact root/library.
+                        self.assertIsInstance(health['pid'], int)
+                        self.assertGreater(health['pid'], 0)
+                        worker_pid = health['pid']
+                    else:
+                        self.assertEqual(health['pid'], process.pid)
                     with urllib.request.urlopen(base, timeout=2) as response:
                         index = response.read().decode('utf-8')
                     scripts = re.findall(r'<script src="([^"]+)" defer></script>', index)
@@ -66,6 +74,9 @@ class StartupTests(unittest.TestCase):
                         self.assertEqual(json.load(response)['papers'], [])
                 finally:
                     # Only the child process created by this test is stopped.
+                    if worker_pid != process.pid:
+                        subprocess.run(['taskkill', '/PID', str(worker_pid), '/T', '/F'],
+                                       capture_output=True, check=False)
                     process.terminate()
                     process.wait(timeout=5)
 

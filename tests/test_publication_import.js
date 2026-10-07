@@ -28,6 +28,7 @@ const context = {
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, "../static/publication-ui.js"), "utf8") + "\nglobalThis.lookup = openPublicationLookup; globalThis.missing = publicationMissing;", context);
 function find(label, node = content) { if (node?.attrs?.label === label) return node; for (const child of node?.children || []) { const match = find(label, child); if (match) return match; } }
+function textOf(node) { return typeof node === "string" ? node : (node?.children || []).map(textOf).join(" "); }
 const tick = async () => { await Promise.resolve(); await Promise.resolve(); };
 const paper = { id: "0123456789abcdef", title: "Fixture paper" };
 (async () => {
@@ -47,6 +48,20 @@ const paper = { id: "0123456789abcdef", title: "Fixture paper" };
   networkResolve({ paper: { ...paper, metadata_enrichment: { status: "partial", missing: [{ key: "doi", label: "DOI" }] } } }); await tick();
   find("完成").attrs.onclick(); await failure;
   assert.equal(context.missing({ journal: "J", year: 2024, doi: "10.1234/a", page_range: "1-10", authors: ["A Author"] }).length, 0);
+  const complete = { ...paper, journal: "J", year: 2024, doi: "10.1234/a", page_range: "1-10", authors: ["A Author"],
+    metadata_enrichment: { status: "complete", missing: [], conflicts: [], error: "" } };
+  calls = []; const optional = context.lookup(complete);
+  assert.ok(textOf(content).includes("当前出版信息已完整"));
+  assert.equal(textOf(content).includes("未能可靠识别"), false);
+  assert.ok(find("联网核对")); find("暂不搜索").attrs.onclick(); await optional;
+  assert.equal(calls.length, 0, "Declining an optional recheck must not downgrade complete metadata");
+  const verified = { ...complete, metadata_enrichment: { ...complete.metadata_enrichment, checked_at: "2026-01-02T00:00:00Z" } };
+  calls = []; const reopened = context.lookup(verified);
+  assert.equal(context.publicationVerified(verified), true);
+  assert.ok(textOf(content).includes("出版信息已核对"));
+  assert.equal(find("联网核对"), undefined); assert.equal(find("联网补全"), undefined);
+  find("完成").attrs.onclick(); await reopened;
+  assert.equal(calls.length, 0, "Closing a successful check must preserve its saved status without another request");
   const prompted = [];
   close.classList = { add() {}, remove() {} };
   context.FormData = class { append() {} };
@@ -62,5 +77,5 @@ const paper = { id: "0123456789abcdef", title: "Fixture paper" };
   await context.importFiles([{ name: "first.pdf" }, { name: "second.pdf" }]);
   assert.deepEqual(prompted, ["first", "second"], "Batch imports prompt each incomplete new paper and skip complete or already declined papers");
   assert.equal(context.state.importing, false);
-  console.log("Publication import: no search before consent, decline/Esc, confirmed search, live update, failure and retry passed.");
+  console.log("Publication import: consent, decline/Esc, completed-check preservation, accurate optional recheck text, failure and retry passed.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

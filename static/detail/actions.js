@@ -11,7 +11,8 @@ async function translateAction(p, pause = false) {
   toast(pause ? "已请求暂停" : "已加入全文翻译队列");
 }
 async function runPaperTask(task) {
-  const id = state.detail.id; toast(({ team: "正在查询团队背景…", summarize: "正在整理研究速览…" })[task], "success", 7000);
+  if (task !== "summarize") throw new Error("此论文任务已取消。");
+  const id = state.detail.id; toast("正在整理研究速览…", "success", 7000);
   const data = await api(`/api/papers/${encodeURIComponent(id)}/${task}`, { method: "POST", body: {} });
   await loadLibrary(); if (state.detail?.id === id) { state.detail = normalizeDetail(await api(`/api/papers/${encodeURIComponent(id)}`)); renderDetail(); }
   const status = data.paper?.[`${task}_status`] || data.status;

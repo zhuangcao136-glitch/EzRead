@@ -277,11 +277,24 @@ class TranslationTests(unittest.TestCase):
         with patch.object(codex_models, 'resolve_config', side_effect=AssertionError('must not load model catalog')):
             self.assertEqual(server.validate_settings({'theme': 'sage', 'reader_split_ratio': .6}), {'theme': 'sage', 'reader_split_ratio': .6})
 
-    def test_translate_bridge_forwards_snapshot_without_affecting_other_tasks(self):
-        with patch.object(codex_bridge, '_run_json', return_value={'p1': '译文'}) as run:
-            codex_bridge.translate_blocks([self.doc['blocks'][0]], model='model-b', reasoning_effort='high')
-            self.assertEqual(run.call_args.kwargs['model'], 'model-b')
-            self.assertEqual(run.call_args.kwargs['reasoning_effort'], 'high')
+    def test_supported_themes_and_retired_saved_values(self):
+        for theme in ('paper', 'sage', 'graphite'):
+            with self.subTest(theme=theme):
+                self.assertEqual(server.validate_settings({'theme': theme}), {'theme': theme})
+                with server.db() as con:
+                    con.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', ('theme', json.dumps(theme)))
+                self.assertEqual(server.settings()['theme'], theme)
+        with server.db() as con:
+            con.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', ('ui_font_size', '20'))
+        for retired in ('cream', 'light', 'unknown', None, True):
+            with self.subTest(retired=retired):
+                with self.assertRaises(ValueError):
+                    server.validate_settings({'theme': retired})
+                with server.db() as con:
+                    con.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', ('theme', json.dumps(retired)))
+                self.assertEqual(server.settings()['theme'], 'paper')
+                self.assertEqual(server.settings()['ui_font_size'], 20)
+        self.assertEqual(server.get_doc(PID), self.doc)
 
     def test_selection_reasoning_settings_are_independent_and_validated(self):
         self.assertEqual(server.settings()['selection_translation_reasoning_effort'], '')
@@ -316,7 +329,7 @@ class TranslationTests(unittest.TestCase):
                         {'Content-Type': 'application/json'}, method='POST')
                     with urllib.request.urlopen(req) as response:
                         self.assertEqual(json.load(response)['translation'], '模拟划线译文')
-                    translate.assert_called_with('First synthetic paragraph.', model='model-a', reasoning_effort=expected)
+                    translate.assert_called_with('First synthetic paragraph.', model='model-a', reasoning_effort=expected, paper_id=PID)
                 self.assertFalse(server.get_doc(PID)['blocks'][0].get('translation'))
         finally:
             httpd.shutdown(); thread.join(timeout=2); httpd.server_close()

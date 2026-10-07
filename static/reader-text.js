@@ -209,6 +209,9 @@ function readerCancelTranslation() {
   const request = readerTextUI.request;
   readerTextUI.request = null;
   if (!request) return;
+  clearTimeout(request.progressTimer);
+  clearInterval(request.elapsedTimer);
+  request.completed = true;
   request.controller.abort();
   // Closing fetch alone does not interrupt the backend model turn.
   void api(`/api/papers/${encodeURIComponent(request.paperId)}/text-actions`, {
@@ -217,30 +220,92 @@ function readerCancelTranslation() {
   }).catch(() => {});
 }
 function readerTranslationKey(selection) { return JSON.stringify([selection.paperId, selection.ranges]); }
+function readerTranslationErrorMessage(error) {
+  const text = error.message || "翻译请求失败。";
+  return /Failed to fetch|NetworkError|Network request failed/i.test(text)
+    ? "无法连接本机翻译服务，请检查 EzRead 后台是否运行。" : text;
+}
+function readerFitTranslationPopup(popup) {
+  const box = popup.getBoundingClientRect();
+  popup.style.left = `${Math.max(8, Math.min(box.left, document.documentElement.clientWidth - box.width - 8))}px`;
+  popup.style.top = `${Math.max(8, Math.min(box.top, window.innerHeight - box.height - 8))}px`;
+}
+async function readerTranslationProgress(request, popup, repeat = true) {
+  if (request.controller.signal.aborted || readerTextUI.request !== request || !popup.isConnected) return;
+  try {
+    const query = new URLSearchParams({ client_id: request.clientId, request_id: request.id });
+    const result = await api(`/api/papers/${encodeURIComponent(request.paperId)}/selection-progress?${query}`, {
+      signal: request.controller.signal
+    });
+    if (request.controller.signal.aborted || readerTextUI.request !== request || !popup.isConnected) return;
+    const events = result.events || [];
+    $(".reader-translation-current-status", popup).textContent = events.at(-1)?.text || "等待通道状态…";
+    if (!request.completed) {
+      if (result.output) $(".reader-selected-translation-result", popup).textContent = result.output;
+    }
+    readerFitTranslationPopup(popup);
+  } catch (error) {
+    if (!request.controller.signal.aborted && readerTextUI.request === request && popup.isConnected)
+      $(".reader-translation-current-status", popup).textContent = `进度连接：${readerTranslationErrorMessage(error)}`;
+  } finally {
+    if (repeat && !request.completed && !request.controller.signal.aborted && readerTextUI.request === request && popup.isConnected)
+      request.progressTimer = setTimeout(() => { void readerTranslationProgress(request, popup); }, 500);
+  }
+}
 async function readerTranslateRange(selection = readerSelectionSnapshot(), kind = "sentence") {
   if (!selection || readerTextUI.editor) return;
   if (!["word", "sentence"].includes(kind)) return;
   if (Array.from(selection.text).length > 1200) { toast("一次最多选择 1200 个字符", "warn"); return; }
+  const cancelButton = kind === "sentence" ? button("取消翻译", () => {
+    if (readerTextUI.request !== request || request.completed) return;
+    readerCancelTranslation();
+    $(".reader-selected-translation-result", popup).textContent = "已取消本次翻译。";
+    $(".reader-translation-current-status", popup).textContent = "翻译对话保留，下次继续使用。";
+    $(".reader-translation-progress-hint", popup).textContent = `调用进度 · 用时 ${((Date.now() - request.started) / 1000).toFixed(1)} 秒`;
+    cancelButton.remove(); readerFitTranslationPopup(popup);
+  }) : null;
   const popup = el("div", { class: "reader-text-card reader-selected-translation", role: "status" },
     el("strong", {}, kind === "word" ? "翻译单词 · 离线词典" : "翻译句子"), el("blockquote", { class: "reader-text-quote" }, selection.text),
-    el("p", { class: "reader-selected-translation-result" }, kind === "word" ? "正在查词…" : "正在翻译…"));
+    el("p", { class: "reader-selected-translation-result" }, kind === "word" ? "正在查词…" : "正在提交翻译请求…"),
+    kind === "sentence" ? el("div", { class: "reader-translation-progress" },
+      el("p", { class: "reader-translation-progress-hint" }, "调用进度 · 已等待 0 秒"),
+      el("p", { class: "reader-translation-current-status", "aria-label": "最新模型状态" }, "等待通道状态…"),
+      el("div", { class: "reader-text-card-actions" }, cancelButton)) : null);
   const rect = selection.domRange?.getBoundingClientRect?.() || $("#translation-scroll").getBoundingClientRect();
   readerTextPopover(popup, rect.left, rect.bottom + 8);
   readerTextUI.clientId ||= readerTextRequestId();
   const request = { id: readerTextRequestId(), clientId: readerTextUI.clientId, paperId: selection.paperId,
-    key: readerTranslationKey(selection), controller: new AbortController() };
+    key: readerTranslationKey(selection), controller: new AbortController(), completed: false, started: Date.now() };
   readerTextUI.request = request;
+  if (kind === "sentence") {
+    request.elapsedTimer = setInterval(() => {
+      if (popup.isConnected && !request.completed)
+        $(".reader-translation-progress-hint", popup).textContent = `调用进度 · 已等待 ${Math.floor((Date.now() - request.started) / 1000)} 秒`;
+    }, 1000);
+    request.progressTimer = setTimeout(() => { void readerTranslationProgress(request, popup); }, 150);
+  }
   try {
     const result = await api(`/api/papers/${encodeURIComponent(selection.paperId)}/text-actions`, {
       method: "POST", signal: request.controller.signal, body: { action: kind === "word" ? "translate_word" : "translate_sentence",
         ...readerTextPayload(selection), client_id: request.clientId, request_id: request.id }
     });
+    request.completed = true;
     if (readerTextUI.request === request && popup.isConnected && state.reader?.id === request.paperId)
       $(".reader-selected-translation-result", popup).textContent = result.translation;
   } catch (error) {
+    request.completed = true;
     if (!request.controller.signal.aborted && readerTextUI.request === request && popup.isConnected)
-      $(".reader-selected-translation-result", popup).textContent = error.message;
-  } finally { if (readerTextUI.request === request) readerTextUI.request = null; }
+      $(".reader-selected-translation-result", popup).textContent = readerTranslationErrorMessage(error);
+  } finally {
+    clearTimeout(request.progressTimer); clearInterval(request.elapsedTimer);
+    cancelButton?.remove();
+    if (kind === "sentence" && readerTextUI.request === request && popup.isConnected) {
+      $(".reader-translation-progress-hint", popup).textContent = `调用进度 · 用时 ${((Date.now() - request.started) / 1000).toFixed(1)} 秒`;
+      await readerTranslationProgress(request, popup, false);
+    }
+    if (popup.isConnected) readerFitTranslationPopup(popup);
+    if (readerTextUI.request === request) readerTextUI.request = null;
+  }
 }
 function readerShowAnnotation(item, x, y) {
   if (readerTextUI.editor) return;

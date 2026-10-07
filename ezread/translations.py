@@ -137,7 +137,6 @@ def execute_translation(app: ApplicationContext, pid, event):
     else:
         pending = [b for b in targets if not b.get('translation', '').strip() and not b.get('translation_manually_edited')]
     app.update_doc(pid, lambda d: d['translation'].update(status='running', error=''))
-    context = {'title': doc['title'], 'abstract': doc.get('abstract', ''), 'journal': doc.get('journal', '')}
     for batch in app.batches(pending):
         if event.is_set():
             break

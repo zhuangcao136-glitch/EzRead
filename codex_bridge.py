@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +16,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 from ezread.config import environment_value
+from ezread import processes as _processes
 
 
 class TranslationError(RuntimeError):
@@ -53,6 +53,13 @@ def _environment() -> dict[str, str]:
 
 def _flags() -> dict[str, Any]:
     return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+
+def spawn(command, **kwargs):
+    try:
+        return _processes.spawn(command, **kwargs)
+    except _processes.Closing as exc:
+        raise TranslationError('应用正在关闭，任务已停止。', code='cancelled') from exc
 
 
 def status() -> dict[str, Any]:
@@ -103,9 +110,10 @@ def _classify_error(output: str) -> TranslationError:
 
 class _StartupDiagnostics:
     """Drain stderr without retaining logs or exposing credentials to clients."""
-    def __init__(self, process):
+    def __init__(self, process, on_output=None):
         self.code = None
         self.thread = None
+        self.on_output = on_output
         if getattr(process, 'stderr', None) is not None:
             self.thread = threading.Thread(target=self._read, args=(process.stderr,), daemon=True,
                                            name='ezread-codex-diagnostics')
@@ -120,6 +128,8 @@ class _StartupDiagnostics:
                 code = _classify_error(line).code
                 if code in ('permissions', 'auth', 'network') and self.code != 'permissions':
                     self.code = code
+                if self.on_output is not None:
+                    self.on_output(line)
         except (OSError, ValueError):
             pass
 
@@ -130,6 +140,7 @@ class _StartupDiagnostics:
 
 
 def _stop(process: subprocess.Popen) -> None:
+    _processes.release(process)
     if process.poll() is not None:
         return
     try:
@@ -235,7 +246,7 @@ def _run_json(instruction: str, data: Any, schema: dict, *, cancel_event=None,
         if model:
             command[-1:-1] = ["--model", model]
         try:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            process = spawn(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, env=_environment(),
                                        encoding="utf-8", errors="replace", **_flags())
         except OSError as exc:
@@ -283,44 +294,6 @@ def _run_json(instruction: str, data: Any, schema: dict, *, cancel_event=None,
             _stop(process)
 
 
-def translate_blocks(blocks: list[dict], context: dict | None = None, *,
-                     cancel_event=None, timeout: float = 420, model: str | None = None,
-                     reasoning_effort: str = 'low') -> dict[str, str]:
-    """Translate one batch and fail atomically if any block is missing or empty."""
-    if not blocks:
-        return {}
-    normalized = []
-    identifiers = []
-    for block in blocks:
-        identifier = str(block["id"])
-        if not identifier or identifier in identifiers or not isinstance(block.get("text"), str):
-            raise TranslationError("待翻译段落的编号或文本无效。", retryable=False, code="input")
-        identifiers.append(identifier)
-        normalized.append({"id": identifier, "text": block["text"]})
-    schema = {"type": "object", "additionalProperties": False,
-              "properties": {key: {"type": "string"} for key in identifiers},
-              "required": identifiers}
-    instruction = """Translate EVERY supplied block from English into simplified Chinese in full.
-Preserve one JSON property per block id, exactly matching the supplied ids; its value is that block's translation.
-Do not summarize, shorten, omit sentences, merge blocks, add a preface, or replace source text with commentary.
-Never move a clause, number, or phrase to a neighboring block id, even when a sentence continues across blocks.
-Preserve all numbers, units, symbols, variable names, mathematical equations, citations, references,
-URLs, author names, and figure/table numbers. Retain source paragraph breaks. Translate headings and captions.
-Use context and any glossary solely to keep terminology consistent. For an ambiguous specialist term,
-retain its English spelling in parentheses where helpful; never guess a missing result or formula.
-Preserve already-Chinese text. If a block is solely an equation or bibliographic entry, preserve it verbatim.
-Extraction may include broken line wraps; join obvious line wraps without changing meaning.
-"""
-    result = _run_json(instruction, {"context": context or {}, "blocks": normalized}, schema,
-                       cancel_event=cancel_event, timeout=timeout, model=model, reasoning_effort=reasoning_effort)
-    if set(result) != set(identifiers) or any(not isinstance(result[k], str) for k in identifiers):
-        raise TranslationError("返回译文缺少段落或编号不匹配，未覆盖已有内容。请重试本批。",
-                               code="invalid_response")
-    if any(block["text"].strip() and not result[block["id"]].strip() for block in normalized):
-        raise TranslationError("返回译文包含空段落，未覆盖已有内容。请重试本批。", code="invalid_response")
-    return result
-
-
 def propose_journal_changes(instruction: str, rows: list, *, model: str, reasoning_effort: str) -> dict:
     """Return a proposed catalogue edit; the caller validates and saves it."""
     fields = ('issn', 'tier', 'name', 'aliases', 'basis', 'source_url')
@@ -346,12 +319,17 @@ def propose_journal_changes(instruction: str, rows: list, *, model: str, reasoni
                      model=model, reasoning_effort=reasoning_effort)
 
 
+def prepare_selection(*, model=None, reasoning_effort=None, cancel_event=None, on_progress=None):
+    import selection_codex
+    return selection_codex.prepare(model=model, reasoning_effort=reasoning_effort, cancel_event=cancel_event, on_progress=on_progress)
+
+
 def translate_selection(text: str, *, model: str, reasoning_effort: str,
-                        cancel_event=None, target_language='zh') -> str:
+                        cancel_event=None, target_language='zh', on_progress=None, paper_id=None) -> str:
     """Reusable dedicated transport, isolated from paper chat and full translation."""
     import selection_codex
     return selection_codex.translate(text, model=model, reasoning_effort=reasoning_effort,
-        cancel_event=cancel_event, target_language=target_language)
+        cancel_event=cancel_event, target_language=target_language, on_progress=on_progress, paper_id=paper_id)
 
 
 def summarize_paper(text: str, *, cancel_event=None, timeout: float = 420,
@@ -378,48 +356,3 @@ Do not invent author/team information, impact factors, quartiles, dates, citatio
         raise TranslationError("论文简介格式不完整，请重试。", code="invalid_response")
     result["tags"] = [tag.strip() for tag in result["tags"] if isinstance(tag, str) and tag.strip()][:8]
     return result
-
-
-def research_team(context: dict, *, cancel_event=None, timeout: float = 300) -> dict:
-    """Opt-in public-web research, separate from the tool-free translation path."""
-    schema = {"type": "object", "additionalProperties": False,
-              "properties": {"text": {"type": "string"}, "sources": {"type": "array", "items": {
-                  "type": "object", "additionalProperties": False,
-                  "properties": {"title": {"type": "string"}, "url": {"type": "string"}},
-                  "required": ["title", "url"]}}}, "required": ["text", "sources"]}
-    instruction = """Research the authors' team background for this paper using public web search.
-First match the paper title/DOI, authors, and institutions to avoid same-name researchers.
-Prefer official lab, university, researcher, and publisher pages. You MUST actually search and open
-the pages you use. Describe only verified lab names, leaders, affiliations, research directions,
-and official homepages in concise simplified Chinese. Do not infer that all coauthors form one team.
-Use numbered citations [1], [2], etc. after EVERY factual paragraph, matching sources array order.
-Every source URL must be a real page you opened, not a guessed URL or search result URL.
-Do not disclose personal contact details. Do not invent metrics, rankings, or distinctions.
-If you cannot verify a team, write '暂无可核验的团队背景资料。' and return sources: [].
-Mention incomplete verification clearly; do not fill gaps using model memory.
-"""
-    try:
-        result = _run_json(instruction, {"paper_context": context}, schema,
-                           cancel_event=cancel_event, timeout=timeout, web_search=True)
-    except TranslationError as exc:
-        if exc.code == "unverified_sources":
-            return {"text": "暂无可核验的团队背景资料。", "sources": []}
-        raise
-    if not isinstance(result.get("text"), str) or not isinstance(result.get("sources"), list):
-        raise TranslationError("团队资料格式不完整，请重试。", code="invalid_response")
-    valid_sources = []
-    for source in result["sources"]:
-        if not isinstance(source, dict) or not isinstance(source.get("url"), str):
-            raise TranslationError("团队资料中的来源不完整，请重试。", code="invalid_response")
-        parsed = urlparse(source["url"])
-        if parsed.scheme not in ("https", "http") or not parsed.hostname or parsed.username:
-            raise TranslationError("团队资料中的来源链接无效，请重试。", code="invalid_response")
-        valid_sources.append({"title": str(source.get("title") or parsed.hostname), "url": source["url"]})
-    if not valid_sources:
-        return {"text": "暂无可核验的团队背景资料。", "sources": []}
-    citations = [int(value) for value in re.findall(r"\[(\d+)\]", result["text"])]
-    paragraphs = [text.strip() for text in result["text"].split("\n\n") if text.strip()]
-    if (not citations or any(index < 1 or index > len(valid_sources) for index in citations)
-            or any(not re.search(r"\[\d+\]", paragraph) for paragraph in paragraphs)):
-        raise TranslationError("团队资料缺少有效的逐段来源标记，请重试。", code="invalid_response")
-    return {"text": result["text"], "sources": valid_sources}

@@ -11,6 +11,7 @@ async function ezreadPrepareDesktopClose() {
     }
   }
   const saves = [];
+  if (typeof readerCancelTranslation === "function") readerCancelTranslation();
   if (typeof readerFlushTextEditor === "function") saves.push(readerFlushTextEditor());
   if (typeof readerScrollActive === "function" && readerScrollActive()) {
     if (typeof saveReadPage === "function") saves.push(saveReadPage());

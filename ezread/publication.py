@@ -20,6 +20,10 @@ def assessment(doc):
     saved.setdefault('status', 'needs_consent' if saved['missing'] else 'complete')
     if saved['missing'] and saved['status'] == 'complete':
         saved['status'] = 'needs_consent'
+    if (saved['status'] == 'declined' and saved.get('checked_at') and not saved['missing']
+            and not saved.get('conflicts') and not saved.get('error')):
+        # Older dialogs overwrote a successful check when an optional recheck was closed.
+        saved['status'] = 'complete'
     return saved
 
 
@@ -151,7 +155,12 @@ def enrich(app: ApplicationContext, pid, data):
         raise ValueError('请明确选择是否允许联网补全出版信息。')
     original = app.get_doc(pid)
     if not data['consent']:
-        app.update_doc(pid, lambda d: d.update(metadata_enrichment={**assessment(d), 'status': 'declined', 'error': ''}))
+        def decline(current):
+            saved = assessment(current)
+            if saved['missing']:
+                saved.update(status='declined', error='')
+            current['metadata_enrichment'] = saved
+        app.update_doc(pid, decline)
         return app.get_doc(pid)
     # Backfill local fields of old imports in memory; do not re-import or change source blocks.
     normalized_original = paper_metadata.normalize_publication(original)
@@ -170,7 +179,8 @@ def enrich(app: ApplicationContext, pid, data):
     try:
         found = lookup(search_doc)
     except ValueError as exc:
-        app.update_doc(pid, lambda d: d.update(metadata_enrichment={**assessment(d), 'status': 'error', 'error': str(exc)}))
+        error = str(exc)
+        app.update_doc(pid, lambda d: d.update(metadata_enrichment={**assessment(d), 'status': 'error', 'error': error}))
         return app.get_doc(pid)
     def commit(current):
         provenance = current.setdefault('metadata_provenance', {})

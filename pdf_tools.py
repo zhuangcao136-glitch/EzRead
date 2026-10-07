@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pdfplumber
 import pypdfium2 as pdfium
-from PIL import Image
 
 _PDF_LOCK = threading.RLock()
 _FIGURE_START = re.compile(r"^(?:Fig(?:ure)?|FIG(?:URE)?)\.?\s*\d+\s*(?:[|:—–]|\.(?=\s)|\s+(?=[A-Z]))")
@@ -426,7 +425,6 @@ def _paragraphs(lines, width, body_size):
     blocks = []
     for group in groups:
         text = _join_lines(group)
-        first = group[0]
         kind = 'heading' if (all(x['heading'] for x in group)
                              and (len(text) < 200 or all(x['bold'] > .72 for x in group))) else 'paragraph'
         if _FIGURE_START.match(text) or _TABLE_START.match(text):
@@ -807,33 +805,3 @@ def extract_document(source_path, asset_dir):
     return {'metadata': metadata, 'pages': pages, 'blocks': blocks, 'figures': figures,
             'cover': cover, 'warnings': warnings,
             'extraction': {'version': 4, 'method': 'gutter-aware-two-column', 'ocr': False}}
-
-
-def supplement_figures(asset_dir, existing_figures):
-    """Add newly detected visuals to an older import without changing its saved cover or text."""
-    asset_dir = Path(asset_dir)
-    original = asset_dir / 'original.pdf'
-    if not original.is_file():
-        raise FileNotFoundError('找不到论文原文。')
-    known = [(int(f.get('page', 0)), f.get('bbox')) for f in existing_figures if f.get('bbox')]
-    additions = []
-    with pdfplumber.open(original) as pdf:
-        for number, page in enumerate(pdf.pages, 1):
-            width, height = float(page.width), float(page.height)
-            lines = _lines(page)
-            visible = [line for line in lines if not _is_running(line, width, height, number)]
-            for box in _graphic_candidates(page, visible):
-                normalized = _norm(box, width, height)
-                if normalized[2] - normalized[0] < .004 or normalized[3] - normalized[1] < .004:
-                    continue
-                center = ((normalized[0] + normalized[2]) / 2,
-                          (normalized[1] + normalized[3]) / 2)
-                if any(p == number and _inside(*center, old) for p, old in known):
-                    continue
-                index = len(existing_figures) + len(additions) + 1
-                name = f'figure-added-{index:03}.jpg'
-                _crop_page(asset_dir, number, normalized, name)
-                additions.append({'id': f'fig-added-{index}', 'page': number,
-                                  'path': name, 'bbox': normalized, 'caption': '', 'score': 0})
-                known.append((number, normalized))
-    return additions

@@ -99,7 +99,7 @@ def _query(timeout=TIMEOUT):
     if not cli:
         raise UsageError('未找到官方 Codex，请先安装并登录 ChatGPT 账号。', 'missing_cli')
     try:
-        process = subprocess.Popen([cli, 'app-server', '--stdio', '-c', 'forced_login_method="chatgpt"'],
+        process = codex_bridge.spawn([cli, 'app-server', '--stdio', '-c', 'forced_login_method="chatgpt"'],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, encoding='utf-8', errors='replace',
                                    env=codex_bridge._environment(), **codex_bridge._flags())
@@ -183,6 +183,7 @@ def _query(timeout=TIMEOUT):
         reader.join(timeout=1)
         with _lock:
             _processes.discard(process)
+        codex_bridge._processes.release(process)
 
 
 def snapshot():

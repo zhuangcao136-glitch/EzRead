@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Mapping
 
-VERSION = '3.4.1'
+VERSION = '3.5.1'
 _LEGACY_ENV = {
     'EZREAD_DATA_DIR': 'TUDU_DATA_DIR',
     'EZREAD_CODEX_PATH': 'TUDU_CODEX_PATH',
@@ -27,3 +27,11 @@ def data_directory(root: Path, environment: Mapping[str, str] | None = None) -> 
     if not directory.is_absolute():
         directory = root / directory
     return directory.resolve()
+
+
+def listen_port(environment: Mapping[str, str] | None = None) -> int:
+    env = os.environ if environment is None else environment
+    value = int(env.get('EZREAD_PORT', '47831'))
+    if not 1 <= value <= 65535:
+        raise ValueError('EZREAD_PORT must be between 1 and 65535.')
+    return value

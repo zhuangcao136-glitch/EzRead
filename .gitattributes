@@ -1,6 +1,8 @@
 * text=auto
 .gitattributes text eol=lf
 .gitignore text eol=lf
+.editorconfig text eol=lf
+*.toml text eol=lf
 *.py text eol=lf
 *.pyw text eol=lf
 *.js text eol=lf

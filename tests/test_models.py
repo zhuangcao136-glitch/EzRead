@@ -108,7 +108,7 @@ class ModelTests(unittest.TestCase):
                 models.resolve_config(*args)
             self.assertEqual(caught.exception.code, code)
         with patch.object(models, '_query', side_effect=AssertionError('no RPC during resolve')):
-            self.assertEqual(models.validate_config('test-model', 'high')['reasoning_effort'], 'high')
+            self.assertEqual(models.resolve_config('test-model', 'high')['reasoning_effort'], 'high')
 
     def test_unavailable_does_not_fabricate_default(self):
         with self.assertRaises(models.ModelError) as caught:

@@ -8,8 +8,10 @@
 
 - 源图：`assets/branding/ezread-book.png`。
 - 应用 PNG：`static/ezread-icon.png`。
-- Windows 多尺寸 ICO：`static/ezread.ico`。所有尺寸采用所选图标的墨绿书本、暖白书页和金色书签轮廓，使用适合任务栏的纯色版本，避免 Windows 选择较大但柔和的原图再缩放。运行 `python assets/branding/build_windows_icon.py` 可重建；应用内展示仍使用已确认的原始图像。
+- Windows 多尺寸 ICO：`static/ezread.ico`。16、24、32、48、64、128、256 像素版本均由应用使用的高清原图 `static/ezread-icon.png` 直接缩放生成，保留书页层次、材质、阴影、金色书签和透明背景，使桌面快捷方式、任务栏与应用内图标保持相同设计。运行 `python assets/branding/build_windows_icon.py` 可重建，再运行 `powershell -File scripts/build-desktop.ps1` 更新 EXE 内嵌图标。
 - 标题栏辅助 ICO：`static/window-icon-transparent.ico`，仅供原生小图标隐藏；网页 favicon 与任务栏仍使用真实书本图标。
+
+`setup-desktop.ps1` 为桌面快捷方式在 `work/shortcut-icons/` 保存按图标内容摘要命名的同内容 ICO，避免 Windows 沿用旧图标缓存；该目录是本机生成文件，不提交。
 
 提示词：
 

@@ -37,7 +37,13 @@ const edge = process.env.EZREAD_BROWSER || path.join(process.env['PROGRAMFILES(X
   async function save(value) { await page.getByRole('textbox',{name:/所选文字批注|修订选中的文字/}).fill(value);await page.locator('.reader-text-editor').getByRole('button',{name:'保存',exact:true}).click();await page.waitForFunction(()=>readerTextUI.editor===null); }
   try {
     await open();
-    const initial = (await apiState()).doc;
+    const startup = await apiState(), initial = startup.doc;
+    assert.equal(startup.preparations.length,1);
+    assert.equal(startup.calls.length,0);
+    await page.evaluate(() => prepareSelectionSession());
+    assert.equal((await apiState()).preparations.length,1);
+    assert.equal(await page.getByText(/后台连接测试|预热完成/).count(),0);
+    checks.push('opening the main page starts silent background preparation once without showing test output');
     const point=await select('one','第一😀句',true);
     await page.getByRole('menu',{name:'所选文字操作'}).waitFor();
     assert.equal(await page.evaluate(()=>window.getSelection().toString()),'第一😀句');
@@ -83,7 +89,15 @@ const edge = process.env.EZREAD_BROWSER || path.join(process.env['PROGRAMFILES(X
     assert.deepEqual((await apiState()).doc.text_annotations.map(a=>a.color),['yellow','red']);
     assert.equal(await page.evaluate(()=>CSS.highlights.get('ezread-text-highlight').size),2);
     assert.equal(await page.evaluate(()=>CSS.highlights.get('ezread-text-highlight-red').size),1);
-    assert.equal(await source('two').evaluate(span=>getComputedStyle(span,'::highlight(ezread-text-highlight-red)').backgroundColor),'rgba(232, 92, 92, 0.4)');
+    for (const theme of ['paper','sage','graphite']) {
+      await page.evaluate(theme=>{state.settings.theme=theme;applyPreferences();},theme);
+      assert.equal(await source('two').evaluate(span=>getComputedStyle(span,'::highlight(ezread-text-highlight-red)').backgroundColor),'rgb(246, 190, 190)');
+      assert.equal(await source('one').evaluate(span=>getComputedStyle(span,'::highlight(ezread-text-highlight)').backgroundColor),'rgb(246, 231, 182)');
+      assert.equal(await source('two').evaluate(span=>getComputedStyle(span,'::highlight(ezread-text-highlight-red)').color),'rgb(32, 43, 37)');
+      assert.deepEqual((await apiState()).doc.text_annotations.map(a=>a.color),['yellow','red']);
+    }
+    await page.evaluate(()=>{state.settings.theme='paper';applyPreferences();});
+    checks.push('annotation colors and legible text remain stable across all three themes without changing saved marks');
     await page.setViewportSize({width:1000,height:800});
     await menu(await select('two','自然段'));
     const highlightRow=page.getByRole('group',{name:'高亮',exact:true});
@@ -217,6 +231,47 @@ const edge = process.env.EZREAD_BROWSER || path.join(process.env['PROGRAMFILES(X
     await slowStart();await page.evaluate(()=>closeReader());await cancelled();
     await page.evaluate(id=>openReader(id),pid);await source('one').waitFor();
     checks.push('closing and reopening reader cancels pending model translation');
+
+    await page.request.post(origin+'/__test/model-delay',{data:{enabled:false}});
+    await page.request.post(origin+'/__test/model-progress',{data:{mode:'success'}});
+    await page.setViewportSize({width:550,height:700});
+    await menu(await select('one','Another sentence.'));await command('翻译句子');
+    const latest=page.locator('.reader-translation-current-status');
+    await latest.getByText('网络不可用. 正在重新连接... 1/5',{exact:true}).waitFor();
+    await page.getByText('模拟正在输出的部分译文',{exact:true}).waitFor();
+    const progressBounds=await page.locator('.reader-selected-translation').boundingBox();
+    assert(progressBounds.x>=0&&progressBounds.y>=0&&progressBounds.x+progressBounds.width<=551&&progressBounds.y+progressBounds.height<=701);
+    await page.screenshot({path:path.join(root,'work/reader-sentence-progress-preview.png')});
+    await page.waitForFunction(()=>readerTextUI.request===null);
+    assert.equal(await page.locator('.reader-selected-translation-result').innerText(),'模拟划线译文：Another sentence.');
+    assert.equal(await latest.innerText(),'翻译完成。');
+    assert.equal(await page.locator('.reader-translation-progress-log').count(),0);
+    assert.match(await page.locator('.reader-translation-progress-hint').innerText(),/用时/);
+    assert.equal(await page.locator('.reader-selected-translation button').count(),0);
+    checks.push('latest Chinese status and the current partial translation overwrite old output in a narrow window');
+
+    await page.request.post(origin+'/__test/model-progress',{data:{mode:'failure'}});
+    await menu(await select('one','Another sentence.'));await command('翻译句子');
+    await page.getByText('无法连接 Codex 服务，请检查网络。',{exact:true}).first().waitFor();
+    await page.waitForFunction(()=>readerTextUI.request===null);
+    assert.equal(await latest.innerText(),'无法连接 Codex 服务，请检查网络。');
+    assert.equal(await latest.count(),1);
+    await page.screenshot({path:path.join(root,'work/reader-sentence-failure-preview.png')});
+    checks.push('failure displays only the latest error without accumulating a conversation history');
+    await page.request.post(origin+'/__test/model-progress',{data:{mode:'success'}});
+    await menu(await select('one','Another sentence.'));await command('翻译句子');
+    await latest.getByText('网络不可用. 正在重新连接... 1/5',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'取消翻译',exact:true}).click();await cancelled();
+    assert.equal(await page.locator('.reader-selected-translation-result').innerText(),'已取消本次翻译。');
+    assert.match(await latest.innerText(),/对话保留/);
+    assert.equal(await page.getByRole('button',{name:'取消翻译',exact:true}).count(),0);
+    await menu(await select('one','Corrected'));await command('翻译单词');
+    await page.waitForFunction(()=>document.querySelector('.reader-selected-translation-result')?.textContent.includes('corrected'));
+    await page.waitForTimeout(650);
+    assert.equal(await page.locator('.reader-translation-progress').count(),0);
+    assert.match(await page.locator('.reader-selected-translation-result').innerText(),/corrected/);
+    checks.push('manual cancel interrupts the request and polling, retains the paper context and cannot overwrite a new dictionary result');
+    await page.request.post(origin+'/__test/model-progress',{data:{mode:''}});
 
     for(const width of [850,550]) {
       await page.setViewportSize({width,height:900});

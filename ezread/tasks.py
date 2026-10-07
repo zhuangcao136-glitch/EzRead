@@ -18,10 +18,12 @@ def codex_status(app: ApplicationContext, force=False):
 
 
 def enqueue(app: ApplicationContext, pid, kind, options=None):
-    if kind not in ('translate', 'summarize', 'team'):
-        raise ValueError('已取消期刊指标与会议评级查询。')
-    doc = app.get_doc(pid)
+    if kind not in ('translate', 'summarize'):
+        raise ValueError('作者与团队查询功能已取消。' if kind == 'team' else '此任务已取消或不受支持。')
+    app.get_doc(pid)
     with app.LOCK:
+        if app.SHUTDOWN.is_set():
+            raise ValueError('应用正在关闭，任务未加入队列。')
         if (pid, kind) in app.QUEUED:
             if kind == 'translate' and options:
                 check = app.get_doc(pid)
@@ -69,8 +71,14 @@ def batches(blocks, char_limit=9000):
 def worker(app: ApplicationContext):
     import codex_bridge
     while True:
-        pid, kind = app.JOBS.get()
+        job = app.JOBS.get()
+        if job is None:
+            app.JOBS.task_done()
+            return
+        pid, kind = job
         try:
+            if app.SHUTDOWN.is_set() or kind not in ('translate', 'summarize'):
+                continue
             doc = app.get_doc(pid)
             event = app.CANCEL[(pid, kind)]
             if event.is_set():
@@ -92,12 +100,6 @@ def worker(app: ApplicationContext):
                 with app.db() as con:
                     paper_ai.add_message(con,pid,ai['generation'],'assistant','summary',
                         '\n'.join(f'{name}：{result.get(name, "")}' for name in ('summary','problem','method','results','limitations')))
-            elif kind == 'team':
-                app.update_doc(pid, lambda d: d.update(team_status='running'))
-                if not hasattr(codex_bridge, 'research_team'):
-                    raise ValueError('联网团队背景查询暂不可用。论文作者与单位仍可查看。')
-                result = codex_bridge.research_team({k: doc.get(k) for k in ('title', 'doi', 'authors', 'affiliations', 'abstract')}, cancel_event=event)
-                app.update_doc(pid, lambda d: d.update(team=result.get('text', ''), team_sources=result.get('sources', []), team_status='completed'))
         except Exception as exc:
             message = str(exc)[:1800]
             limited = getattr(exc, 'code', '') == 'quota'
@@ -107,7 +109,7 @@ def worker(app: ApplicationContext):
                 if kind == 'translate':
                     app.update_doc(pid, lambda d: d['translation'].update(status='paused' if limited or app.CANCEL.get((pid, kind), threading.Event()).is_set() else 'error', error=message))
                 else:
-                    app.update_doc(pid, lambda d: d.update(**{kind + '_status': 'error', kind + '_error': message}))
+                    app.update_doc(pid, lambda d: d.update(**{kind + '_status': 'paused' if app.SHUTDOWN.is_set() else 'error', kind + '_error': message}))
             except Exception:
                 pass
             print(f'[job {kind} {pid}] {message}', file=sys.stderr, flush=True)
@@ -116,7 +118,7 @@ def worker(app: ApplicationContext):
                 app.QUEUED.discard((pid, kind))
                 resume = (pid, kind) in app.RESUME_REQUESTED
                 app.RESUME_REQUESTED.discard((pid, kind))
-                if resume and not app.QUOTA_PAUSED.is_set():
+                if resume and kind in ('translate', 'summarize') and not app.QUOTA_PAUSED.is_set() and not app.SHUTDOWN.is_set():
                     try:
                         app.enqueue(pid, kind)
                     except ValueError:

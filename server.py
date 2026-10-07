@@ -5,12 +5,14 @@ Feature logic lives in ezread/; keep startup and shared runtime state here.
 from __future__ import annotations
 import argparse
 import queue
+import secrets
 import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from ezread.config import VERSION, data_directory as _data_directory
+from ezread.config import VERSION as VERSION, data_directory as _data_directory, listen_port
 from ezread.selection_requests import SelectionRequests
+from ezread.selection_session import SelectionSession
 from ezread import (
     storage as _storage,
     preferences as _preferences,
@@ -22,6 +24,8 @@ from ezread import (
     tasks as _tasks,
     utils as _utils,
     web as _web,
+    lifecycle as _lifecycle,
+    processes as _processes,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -37,7 +41,10 @@ QUEUED: set[tuple[str, str]] = set()
 RESUME_REQUESTED: set[tuple[str, str]] = set()
 QUOTA_PAUSED = threading.Event()
 STATUS_CACHE = {'at': 0, 'value': {}}
+SHUTDOWN = threading.Event()
+INSTANCE_ID = secrets.token_hex(16)
 SELECTION_REQUESTS = SelectionRequests()
+SELECTION_SESSION = SelectionSession()
 STRUCTURE_JOBS = queue.Queue()
 STRUCTURE_QUEUED = set()
 DEFAULT_SETTINGS = {'sort': 'last_read', 'theme': 'paper', 'collections': [],
@@ -98,9 +105,6 @@ def paper_file_action(pid, action):
 
 
 journal_abbr = _library.journal_abbr
-
-
-crossref_metadata = _library.crossref_metadata
 
 
 media_url = _library.media_url
@@ -172,6 +176,14 @@ def codex_status(force=False):
     return _tasks.codex_status(_context, force)
 
 
+def prepare_shutdown(data):
+    return _lifecycle.prepare_shutdown(_context, data)
+
+
+def attach_desktop(httpd, data):
+    return _lifecycle.attach_desktop(_context, httpd, data)
+
+
 def enqueue(pid, kind, options=None):
     return _tasks.enqueue(_context, pid, kind, options)
 
@@ -191,15 +203,17 @@ Handler = _web.handler_for(_context)
 
 def main():
     global PORT
+    _processes.attach_job()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=47831)
+    parser.add_argument('--port', type=int, default=listen_port())
     parser.add_argument('--open', action='store_true')
     args = parser.parse_args()
     PORT = args.port
     init_db()
     worker_thread = threading.Thread(target=worker, daemon=True, name='translation-queue')
     worker_thread.start()
-    threading.Thread(target=structure_worker, daemon=True, name='paper-structure-queue').start()
+    structure_thread = threading.Thread(target=structure_worker, daemon=True, name='paper-structure-queue')
+    structure_thread.start()
     for doc in all_docs():
         if doc.get('reading_structure', {}).get('status') in ('queued', 'running'):
             schedule_structure(doc['id'])
@@ -217,9 +231,15 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        import codex_bridge
         import codex_usage
         import codex_models
         import selection_codex
+        SHUTDOWN.set()
+        _lifecycle.pause_jobs(_context)
+        JOBS.put(None)
+        STRUCTURE_JOBS.put(None)
+        _processes.shutdown(codex_bridge._stop)
         SELECTION_REQUESTS.shutdown()
         selection_codex.shutdown()
         codex_usage.shutdown()
@@ -227,6 +247,7 @@ def main():
         for event in CANCEL.values():
             event.set()
         worker_thread.join(timeout=5)
+        structure_thread.join(timeout=2)
         httpd.server_close()
 
 

@@ -9,6 +9,8 @@ def schedule_structure(app: ApplicationContext, pid):
     """One bounded semantic check after import; it never blocks PDF ingestion."""
     import paper_structure
     with app.LOCK:
+        if app.SHUTDOWN.is_set():
+            raise ValueError('应用正在关闭，结构校对未加入队列。')
         doc = app.get_doc(pid)
         saved = doc.get('reading_structure', {})
         if pid in app.STRUCTURE_QUEUED or saved.get('status') == 'ready' and saved.get('version') == paper_structure.VERSION and saved.get('source_fingerprint') == paper_structure.fingerprint(doc):
@@ -31,6 +33,8 @@ def commit_import_result(app: ApplicationContext, pid, original, result):
     result.pop('collection_plan', None)
     result.pop('collection_error', None)
     with app.LOCK, app.db() as con:
+        if app.SHUTDOWN.is_set():
+            raise ValueError('应用正在关闭，结构校对已停止。')
         doc = app.get_doc(pid)
         if paper_structure.fingerprint(doc) != original:
             raise ValueError('源文已变化，结构校对结果未覆盖当前内容。')
@@ -44,7 +48,12 @@ def structure_worker(app: ApplicationContext):
     import paper_structure, codex_models
     while True:
         pid = app.STRUCTURE_JOBS.get()
+        if pid is None:
+            app.STRUCTURE_JOBS.task_done()
+            return
         try:
+            if app.SHUTDOWN.is_set():
+                continue
             doc = app.get_doc(pid)
             original = paper_structure.fingerprint(doc)
             def mark_running(d):
@@ -54,9 +63,10 @@ def structure_worker(app: ApplicationContext):
             result = paper_structure.refine(doc, config)
             app.commit_import_result(pid, original, result)
         except Exception as exc:
+            error = str(exc)[:500]
             try:
                 def mark_failed(d):
-                    d['reading_structure'].update(status='needs_review', error=str(exc)[:500])
+                    d['reading_structure'].update(status='needs_review', error=error)
                 app.update_doc(pid, mark_failed)
             except (ValueError, KeyError):
                 pass

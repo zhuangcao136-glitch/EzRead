@@ -1,42 +1,61 @@
 """Dedicated reusable Codex transport for temporary sentence translations.
 
 No paper chat/history, tools, credentials, or user configuration are modified.
-Each request gets an ephemeral thread. The complete validated final message is
+All selections share one in-memory thread until application exit. The validated final message is
 returned immediately; process shutdown and account notifications never gate UI.
 """
 from __future__ import annotations
 
 import atexit
 import json
-import os
 from pathlib import Path
 import queue
 import re
 import subprocess
 import tempfile
 import threading
-import time
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 uses the compatible standalone parser.
+    import tomli as tomllib
 
 import codex_bridge as bridge
 from ezread.config import VERSION
+from ezread.selection_output import diagnostic, partial_translation
 
-IDLE_SECONDS = 120
-MAX_THREADS = 64
 _pool_lock = threading.Lock()
 _call_lock = threading.Lock()
+_preparation_lock = threading.Lock()
+_preparing = False
 _transport = None
+
+
+class Conversation:
+    def __init__(self, key):
+        self.key = key
+        self.thread_id = None
+        self.turn_id = None
+        self.error = None
+        self.created = threading.Event()
+        self.ready = threading.Event()
+        self.ready.set()
+        self.cancel_pending = False
+        self.interrupt_sent = False
 
 
 def cancelled():
     return bridge.TranslationError('此翻译请求已取消。', retryable=False, code='cancelled')
 
 
-def check(deadline, event):
+def check(event):
     if event is not None and event.is_set():
         raise cancelled()
-    if time.monotonic() >= deadline:
-        raise bridge.TranslationError('句子翻译超时，请稍后重试。', code='timeout')
+
+
+def emit(callback, text, kind='status'):
+    if callback is not None:
+        callback({'kind': kind, 'text': text})
 
 
 def isolated_overrides():
@@ -65,12 +84,14 @@ def isolated_overrides():
 
 
 class Transport:
-    def __init__(self, deadline, cancel_event):
+    def __init__(self, cancel_event, on_progress=None):
+        self.on_progress = on_progress
+        emit(on_progress, '正在检查 Codex 登录状态…')
         cli = bridge._cli()
         if not cli:
             raise bridge.TranslationError('未找到官方 Codex，请先安装并登录。', code='cli')
         connection = bridge.status()
-        check(deadline, cancel_event)
+        check(cancel_event)
         if not connection.get('authenticated'):
             raise bridge.TranslationError(connection['message'], retryable=False, code='auth')
         command = [cli, 'app-server', '--stdio']
@@ -84,28 +105,86 @@ class Transport:
         self.responses = {}
         self.events = {}
         self.turns = {}
+        self.messages = {}
+        self.conversations = {}
+        self.by_thread = {}
+        self.pending_threads = {}
+        self.pending_turns = {}
         self.number = 0
         self.closed = False
-        self.thread_count = 0
-        self.last_used = time.monotonic()
+        self.warmed = False
         try:
-            self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            emit(on_progress, '正在启动独立翻译通道…')
+            self.process = bridge.spawn(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, encoding='utf-8', errors='replace',
                 env=bridge._environment(), **bridge._flags())
         except OSError as exc:
             self.temp.cleanup()
             raise bridge.TranslationError('无法启动句子翻译通道。', code='cli') from exc
-        self.diagnostics = bridge._StartupDiagnostics(self.process)
+        self.diagnostics = bridge._StartupDiagnostics(self.process, self.report_diagnostic)
         self.reader = threading.Thread(target=self._read, daemon=True, name='ezread-selection-reader')
         self.reader.start()
         try:
+            emit(on_progress, '正在初始化翻译连接…')
             self.rpc('initialize', {'clientInfo': {'name': 'ezread', 'title': 'EzRead', 'version': VERSION}},
-                     min(deadline, time.monotonic() + 25), cancel_event)
+                     cancel_event)
             self.send({'method': 'initialized', 'params': {}})
         except Exception:
             self.close()
             raise
-        threading.Thread(target=self._idle, daemon=True, name='ezread-selection-idle').start()
+
+    def publish(self, text, kind='status'):
+        with self.lock:
+            callback = self.on_progress
+        emit(callback, text, kind)
+
+    def report_diagnostic(self, raw):
+        text = diagnostic(raw)
+        if text:
+            self.publish(text, 'diagnostic')
+
+    def report_notification(self, method, payload):
+        """Public model output and failures only; private reasoning is excluded."""
+        tid = payload.get('threadId')
+        if tid not in self.events:
+            return
+        turn_id = payload.get('turnId') or (payload.get('turn') or {}).get('id')
+        if turn_id and self.turns.get(tid) and turn_id != self.turns[tid]:
+            return
+        if method == 'error':
+            error = payload.get('error') or {}
+            text = diagnostic(error.get('message', ''))
+            details = diagnostic(error.get('additionalDetails', ''))
+            if details and details not in text:
+                text += '；' + details
+            if payload.get('willRetry'):
+                text += '（通道将自动重试）'
+            if text:
+                self.publish(text, 'diagnostic')
+        elif method == 'item/started':
+            item = payload.get('item') or {}
+            if item.get('type') == 'agentMessage':
+                self.messages[(tid, item.get('id'))] = {'phase': item.get('phase'), 'raw': ''}
+                if item.get('phase') in (None, 'final_answer'):
+                    self.publish('模型开始返回译文…')
+        elif method == 'item/agentMessage/delta':
+            value = self.messages.get((tid, payload.get('itemId')))
+            delta = payload.get('delta')
+            if value is not None and isinstance(delta, str) and value['phase'] in (None, 'final_answer'):
+                value['raw'] = (value['raw'] + delta)[:24000]
+                text = partial_translation(value['raw'])
+                if text:
+                    self.publish(text, 'output')
+        elif method == 'item/completed':
+            item = payload.get('item') or {}
+            if item.get('type') == 'agentMessage' and item.get('phase') == 'commentary':
+                self.report_diagnostic(item.get('text', ''))
+        elif method == 'turn/completed':
+            turn = payload.get('turn') or {}
+            if turn.get('status') in ('failed', 'interrupted'):
+                error = turn.get('error') or {}
+                self.report_diagnostic(error.get('message', ''))
+                self.report_diagnostic(error.get('additionalDetails', ''))
 
     def send(self, payload):
         with self.write_lock:
@@ -124,17 +203,27 @@ class Transport:
             number = self.number
         self.send({'id': number, 'method': method, 'params': params})
 
-    def rpc(self, method, params, deadline, event):
-        check(deadline, event)
+    def rpc(self, method, params, event, conversation=None):
+        check(event)
         with self.lock:
             self.number += 1
             number = self.number
             inbox = queue.Queue(maxsize=1)
             self.responses[number] = inbox
+            if conversation is not None:
+                if method == 'thread/start':
+                    self.pending_threads[number] = conversation
+                elif method == 'turn/start':
+                    conversation.ready.clear()
+                    conversation.turn_id = None
+                    conversation.cancel_pending = False
+                    conversation.interrupt_sent = False
+                    self.turns.pop(conversation.thread_id, None)
+                    self.pending_turns[number] = conversation
         try:
             self.send({'id': number, 'method': method, 'params': params})
             while True:
-                check(deadline, event)
+                check(event)
                 try:
                     response = inbox.get(timeout=.05)
                 except queue.Empty:
@@ -142,6 +231,7 @@ class Transport:
                 if response is None:
                     raise self.connection_error()
                 if 'error' in response:
+                    self.report_diagnostic(response['error'].get('message', ''))
                     raise bridge._classify_error(str(response['error'].get('message', '')))
                 return response.get('result', {})
         finally:
@@ -169,29 +259,64 @@ class Transport:
                     continue
                 if not isinstance(message, dict):
                     continue
+                reply = interrupt = None
                 with self.lock:
                     if 'id' in message and 'method' not in message:
+                        created = self.pending_threads.pop(message['id'], None)
+                        if created is not None:
+                            tid = ((message.get('result') or {}).get('thread') or {}).get('id')
+                            if isinstance(tid, str) and tid:
+                                created.thread_id = tid
+                                self.by_thread[tid] = created
+                            else:
+                                created.error = bridge._classify_error(str((message.get('error') or {}).get('message', '')))
+                                self.conversations.pop(created.key, None)
+                            created.created.set()
+                        started = self.pending_turns.pop(message['id'], None)
+                        if started is not None:
+                            turn = (message.get('result') or {}).get('turn') or {}
+                            if isinstance(turn.get('id'), str):
+                                started.turn_id = turn['id']
+                                self.turns[started.thread_id] = turn['id']
+                                if turn.get('status') in ('completed', 'failed', 'interrupted'):
+                                    started.ready.set()
+                            else:
+                                started.ready.set()
+                            interrupt = self.take_interrupt(started)
                         target = self.responses.get(message['id'])
                     elif 'id' in message:
                         # The translator never services tools or approval requests.
-                        self.send({'id': message['id'], 'error': {'code': -32601, 'message': 'Tools are disabled.'}})
-                        continue
+                        reply = {'id': message['id'], 'error': {'code': -32601, 'message': 'Tools are disabled.'}}
+                        target = None
                     else:
                         payload = message.get('params') or {}
                         tid = payload.get('threadId')
                         method = message.get('method')
                         if method == 'turn/started':
                             self.turns[tid] = (payload.get('turn') or {}).get('id')
-                        if method not in {'error', 'turn/completed', 'item/completed'}:
-                            continue
-                        if method == 'item/completed' and (payload.get('item') or {}).get('type') != 'agentMessage':
-                            continue
-                        target = self.events.get(tid)
+                            session = self.by_thread.get(tid)
+                            if session is not None:
+                                session.turn_id = self.turns[tid]
+                                session.ready.clear()
+                                interrupt = self.take_interrupt(session)
+                            if tid in self.events:
+                                self.publish('翻译通道已接收本轮请求，等待模型输出…')
+                        elif method == 'turn/completed':
+                            session = self.by_thread.get(tid)
+                            if session is not None and session.turn_id == (payload.get('turn') or {}).get('id'):
+                                session.ready.set()
+                        self.report_notification(method, payload)
+                        target = self.events.get(tid) if method in {'error', 'turn/completed', 'item/completed'} else None
+                        if method == 'item/completed' and (payload.get('item') or {}).get('type') != 'agentMessage': target = None
                     if target is not None:
                         try:
                             target.put_nowait(message)
                         except queue.Full:
                             break
+                if reply is not None:
+                    self.send(reply)
+                if interrupt is not None:
+                    self.fire('turn/interrupt', interrupt)
         except (OSError, ValueError, TypeError):
             pass
         finally:
@@ -200,40 +325,107 @@ class Transport:
     def _end(self):
         with self.lock:
             self.closed = True
+            for session in self.conversations.values():
+                session.created.set()
+                session.ready.set()
             for inbox in [*self.responses.values(), *self.events.values()]:
                 try:
                     inbox.put_nowait(None)
                 except queue.Full:
                     pass
 
-    def translate(self, text, model, effort, language, deadline, event):
-        thread_id = turn_id = None
-        self.last_used = time.monotonic()
+    def take_interrupt(self, session):
+        if session.cancel_pending and session.turn_id and not session.interrupt_sent and not session.ready.is_set():
+            session.interrupt_sent = True
+            return {'threadId': session.thread_id, 'turnId': session.turn_id}
+        return None
+
+    def wait(self, signal, event):
+        while not signal.wait(.05):
+            check(event)
+            if self.closed: raise self.connection_error()
+        check(event)
+        if self.closed: raise self.connection_error()
+
+    def conversation(self, model, event):
+        key = '_selection'
+        with self.lock:
+            session = self.conversations.get(key)
+            new = session is None
+            if new:
+                session = self.conversations[key] = Conversation(key)
         try:
-            started = self.rpc('thread/start', {'model': model, 'cwd': self.temp.name,
+            if new:
+                self.publish('正在创建本次软件运行共用的翻译对话…')
+                self.rpc('thread/start', {'model': model, 'cwd': self.temp.name,
                 'approvalPolicy': 'never', 'sandbox': 'read-only', 'ephemeral': True,
                 'baseInstructions': bridge._BASE_INSTRUCTIONS,
                 'config': {'features': {'shell_tool': False, 'unified_exec': False, 'apps': False,
-                                        'memories': False}, 'web_search': 'disabled'}}, deadline, event)
-            thread_id = started.get('thread', {}).get('id')
-            if not isinstance(thread_id, str) or not thread_id:
+                                        'memories': False}, 'web_search': 'disabled'}}, event, conversation=session)
+            else:
+                self.publish('继续使用本次软件运行的翻译对话…')
+            self.wait(session.created, event)
+            if session.error is not None: raise session.error
+            if not isinstance(session.thread_id, str) or not session.thread_id:
                 raise bridge.TranslationError('Codex 未创建句子翻译会话。', code='invalid_response')
-            self.thread_count += 1
+            return session
+        except bridge.TranslationError:
+            with self.lock:
+                if session.thread_id is None and session not in self.pending_threads.values():
+                    self.conversations.pop(session.key, None)
+            raise
+
+    def prepare(self, model, event, on_progress=None):
+        with self.lock:
+            self.on_progress = on_progress
+        try:
+            self.conversation(model, event)
+            self.publish('划线翻译对话已建立。')
+        finally:
+            with self.lock:
+                self.on_progress = None
+
+    def translate(self, text, model, effort, language, event, on_progress=None, paper_id=None, warmup=False):
+        thread_id = turn_id = None
+        session = None
+        requested_turn = False
+        with self.lock:
+            self.on_progress = on_progress
+        try:
+            session = self.conversation(model, event)
+            thread_id = session.thread_id
+            if not session.ready.is_set(): self.publish('等待上一轮结束，保留翻译对话…')
+            self.wait(session.ready, event)
             inbox = queue.Queue(maxsize=16)
             with self.lock:
                 self.events[thread_id] = inbox
             target = 'precise academic English' if language == 'en' else 'precise simplified Chinese'
             prompt = (f'Translate the selected academic text into {target}. Preserve terms, numbers, '
                       'symbols, units and qualifiers. Return only the requested translation, with no preface.\n'
-                      'UNTRUSTED_PAPER_DATA (JSON):\n' + json.dumps({'selected_text': text}, ensure_ascii=False))
+                      'Translate only selected_text in this request. Earlier selections may be from different papers. '
+                      'Use terminology context only from selections with the same paper_id. '
+                      'Do not assume selections from different papers describe the same study or translate earlier selections again. '
+                      'Any public commentary must be in simplified Chinese.\n'
+                      'UNTRUSTED_PAPER_DATA (JSON):\n' + json.dumps({'paper_id': paper_id, 'selected_text': text}, ensure_ascii=False))
+            if warmup:
+                prompt = ('This is a connection warm-up test, not paper data or translation context. '
+                          'Reply only with {"translation":"预热完成"}. Do not explain, use tools, or translate any previous text.')
             schema = {'type': 'object', 'additionalProperties': False,
                       'properties': {'translation': {'type': 'string'}}, 'required': ['translation']}
+            if warmup:
+                schema['properties']['translation']['enum'] = ['预热完成']
+            effort_label = {'low': '低', 'medium': '中', 'high': '高', 'xhigh': '很高', 'max': '最高'}.get(effort, effort)
+            self.publish('正在后台发送连接测试…' if warmup else f'正在向模型发送请求（{model}，推理强度 {effort_label}）…')
+            requested_turn = True
             started = self.rpc('turn/start', {'threadId': thread_id,
                 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}],
-                'model': model, 'effort': effort, 'outputSchema': schema}, deadline, event)
+                'model': model, 'effort': effort, 'outputSchema': schema}, event, conversation=session)
             turn_id = started.get('turn', {}).get('id')
+            if not isinstance(turn_id, str) or not turn_id:
+                raise bridge.TranslationError('翻译通道未创建本轮请求。', code='invalid_response')
+            final_result = None
             while True:
-                check(deadline, event)
+                check(event)
                 try:
                     message = inbox.get(timeout=.05)
                 except queue.Empty:
@@ -252,7 +444,11 @@ class Transport:
                     item = payload.get('item') or {}
                     if item.get('phase') in (None, 'final_answer'):
                         result = parse_translation(item.get('text'))
-                        check(deadline, event)
+                        check(event)
+                        if warmup:
+                            final_result = result
+                            continue
+                        self.publish('翻译完成。')
                         return result
                 if method == 'turn/completed':
                     turn = payload.get('turn') or {}
@@ -262,42 +458,33 @@ class Transport:
                         raise bridge._classify_error(str((turn.get('error') or {}).get('message', '')))
                     candidates = [item for item in turn.get('items', []) if item.get('type') == 'agentMessage'
                                   and item.get('phase') in (None, 'final_answer')]
-                    if not candidates:
+                    if final_result is None and not candidates:
                         raise bridge.TranslationError('句子翻译未返回完整译文。', code='invalid_response')
-                    result = parse_translation(candidates[-1].get('text'))
-                    check(deadline, event)
+                    result = final_result or parse_translation(candidates[-1].get('text'))
+                    check(event)
+                    if warmup and result != '预热完成':
+                        raise bridge.TranslationError('后台连接测试未返回预期回复。', code='invalid_response')
+                    self.publish('后台连接测试已完成。' if warmup else '翻译完成。')
                     return result
         except bridge.TranslationError as exc:
-            if exc.code in {'cancelled', 'timeout'}:
-                tid = turn_id or self.turns.get(thread_id)
-                if thread_id and tid and not self.closed:
-                    try:
-                        self.fire('turn/interrupt', {'threadId': thread_id, 'turnId': tid})
-                    except bridge.TranslationError:
-                        self.close()
-                else:
-                    self.close()  # Initialization/turn start cancelled before its ID arrived.
+            if session is not None and session.thread_id is None:
+                with self.lock:
+                    if session not in self.pending_threads.values():
+                        self.conversations.pop(session.key, None)
+            if exc.code == 'cancelled' and requested_turn and session is not None:
+                with self.lock:
+                    session.cancel_pending = True
+                    interrupt = self.take_interrupt(session)
+                if interrupt is not None:
+                    self.fire('turn/interrupt', interrupt)
             raise
         finally:
-            self.last_used = time.monotonic()
             if thread_id:
                 with self.lock:
                     self.events.pop(thread_id, None)
-                    self.turns.pop(thread_id, None)
-                if not self.closed:
-                    try:
-                        self.fire('thread/unsubscribe', {'threadId': thread_id})
-                    except bridge.TranslationError:
-                        pass
-
-    def _idle(self):
-        while not self.closed:
-            time.sleep(5)
-            with _pool_lock, self.lock:
-                expired = (not _call_lock.locked() and not self.events and not self.responses and
-                           time.monotonic() - self.last_used > IDLE_SECONDS)
-                if expired:
-                    self.close()
+                    self.messages = {key: value for key, value in self.messages.items() if key[0] != thread_id}
+            with self.lock:
+                self.on_progress = None
 
     def close(self):
         self._end()
@@ -323,22 +510,54 @@ def parse_translation(raw):
     return value['translation'].strip()
 
 
-def translate(text, *, model, reasoning_effort, target_language='zh', cancel_event=None, timeout=120):
+def acquire(cancel_event, on_progress):
+    previous = None
+    while not _call_lock.acquire(timeout=.05):
+        check(cancel_event)
+        with _preparation_lock:
+            preparing = _preparing
+        value = {'kind': 'status', 'text': '正在等待翻译连接准备完成…' if preparing else '正在等待前一个划线翻译请求结束…'}
+        if value != previous:
+            emit(on_progress, value['text'], value['kind'])
+            previous = value
+
+
+def transport(cancel_event, on_progress):
     global _transport
+    check(cancel_event)
+    with _pool_lock:
+        if _transport is None or _transport.closed:
+            if _transport is not None:
+                _transport.close()
+            _transport = Transport(cancel_event, on_progress)
+        return _transport
+
+
+def prepare(*, model=None, reasoning_effort=None, cancel_event=None, on_progress=None):
+    global _preparing
+    acquire(cancel_event, on_progress)
+    try:
+        with _preparation_lock:
+            _preparing = True
+        channel = transport(cancel_event, on_progress)
+        channel.prepare(model, cancel_event, on_progress)
+        if not channel.warmed:
+            channel.translate('', model, reasoning_effort, 'zh', cancel_event, on_progress, warmup=True)
+            channel.warmed = True
+    finally:
+        with _preparation_lock:
+            _preparing = False
+        _call_lock.release()
+
+
+def translate(text, *, model, reasoning_effort, target_language='zh', cancel_event=None, on_progress=None, paper_id=None):
     if target_language not in {'zh', 'en'}:
         raise ValueError('Unsupported translation language.')
-    deadline = time.monotonic() + timeout
-    while not _call_lock.acquire(timeout=.05):
-        check(deadline, cancel_event)
+    if paper_id is not None and (not isinstance(paper_id, str) or not re.fullmatch(r'[a-f0-9]{16}', paper_id)):
+        raise ValueError('Invalid paper identity.')
+    acquire(cancel_event, on_progress)
     try:
-        check(deadline, cancel_event)
-        with _pool_lock:
-            if _transport is None or _transport.closed or _transport.thread_count >= MAX_THREADS:
-                if _transport is not None:
-                    _transport.close()
-                _transport = Transport(deadline, cancel_event)
-            transport = _transport
-        return transport.translate(text, model, reasoning_effort, target_language, deadline, cancel_event)
+        return transport(cancel_event, on_progress).translate(text, model, reasoning_effort, target_language, cancel_event, on_progress, paper_id)
     finally:
         _call_lock.release()
 

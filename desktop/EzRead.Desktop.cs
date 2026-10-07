@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -63,6 +64,7 @@ internal static class Program
                 bool owned;
                 try { owned = mutex.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
                 if (!owned) { wake.Set(); return 0; }
+                NativeProcessLifetime.Attach();
                 try {
                     using (var form = new ReaderWindow(options)) {
                         ThreadPool.QueueUserWorkItem(delegate {
@@ -116,6 +118,90 @@ internal static class Program
     }
 }
 
+internal static class NativeProcessLifetime
+{
+    [StructLayout(LayoutKind.Sequential)] private struct BasicLimit {
+        public long ProcessTime, JobTime; public uint Flags; public UIntPtr Minimum, Maximum;
+        public uint ActiveProcesses; public UIntPtr Affinity; public uint Priority, Scheduling;
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct IoCounters {
+        public ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes;
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct ExtendedLimit {
+        public BasicLimit Basic; public IoCounters Io; public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(IntPtr job, int type, ref ExtendedLimit limits, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    private static IntPtr job;
+    public static void Attach() {
+        if (job != IntPtr.Zero) return;
+        IntPtr handle = CreateJobObject(IntPtr.Zero, null);
+        var limits = new ExtendedLimit(); limits.Basic.Flags = 0x2000 | 0x800;
+        if (handle == IntPtr.Zero || !SetInformationJobObject(handle, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimit))) || !AssignProcessToJobObject(handle, GetCurrentProcess())) {
+            int error = Marshal.GetLastWin32Error(); if (handle != IntPtr.Zero) CloseHandle(handle);
+            throw new System.ComponentModel.Win32Exception(error, "无法建立 EzRead 子进程退出管理。");
+        }
+        // Keep this handle until process exit. Closing it early also kills us.
+        job = handle;
+    }
+}
+
+internal sealed class OwnedBackend : IDisposable
+{
+    private readonly ShellOptions options;
+    private readonly JavaScriptSerializer json = new JavaScriptSerializer();
+    private Process process;
+    private string instance;
+    private readonly object gate = new object();
+    public OwnedBackend(ShellOptions value) { options = value; }
+    private Dictionary<string, object> Request(string path, string body = null) {
+        var request = (HttpWebRequest)WebRequest.Create(new Uri(options.Origin, path));
+        request.Proxy = null; request.Timeout = 2000; request.ReadWriteTimeout = 2000;
+        if (body != null) {
+            var bytes = Encoding.UTF8.GetBytes(body); request.Method = "POST";
+            request.ContentType = "application/json"; request.ContentLength = bytes.Length;
+            request.Headers["Origin"] = options.Origin.GetLeftPart(UriPartial.Authority);
+            using (var stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
+        }
+        using (var response = request.GetResponse())
+        using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+            return json.Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+    }
+    private static bool SamePath(object value, string expected) {
+        try { return value is string && Path.IsPathRooted((string)value) && String.Equals(Path.GetFullPath((string)value).TrimEnd('\\'), Path.GetFullPath(expected).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+    public void Capture() { lock (gate) CaptureCore(); }
+    private void CaptureCore() {
+        var health = Request("/api/health");
+        if (!health.ContainsKey("app_root") || !health.ContainsKey("data_dir") || !health.ContainsKey("pid") || !health.ContainsKey("instance_id") || !SamePath(health["app_root"], options.Root) || !SamePath(health["data_dir"], options.Data))
+            throw new InvalidOperationException("后台身份不匹配，未操作该服务。");
+        var candidate = Process.GetProcessById(Convert.ToInt32(health["pid"]));
+        // Retain the kernel handle; a reused numeric PID can never target another process.
+        if (candidate.Handle == IntPtr.Zero) { candidate.Dispose(); throw new InvalidOperationException("后台进程已退出。"); }
+        var confirmation = Request("/api/health");
+        if (!confirmation.ContainsKey("instance_id") || !Object.Equals(confirmation["instance_id"], health["instance_id"]) || !Object.Equals(confirmation["pid"], health["pid"])) {
+            candidate.Dispose(); throw new InvalidOperationException("后台实例已变化。");
+        }
+        if (process != null) process.Dispose();
+        process = candidate; instance = (string)health["instance_id"];
+        Request("/api/desktop-attach", json.Serialize(new { instance_id = instance, process_id = Process.GetCurrentProcess().Id }));
+    }
+    public void Stop() {
+        lock (gate) {
+        if (process != null && process.HasExited) return;
+        // Recapture a backend deliberately reloaded while this window was open.
+        try { CaptureCore(); } catch { if (process == null || process.HasExited) return; }
+        try { Request("/api/shutdown", json.Serialize(new { instance_id = instance })); } catch (WebException) { }
+        if (!process.WaitForExit(10000)) { process.Kill(); process.WaitForExit(3000); }
+        }
+    }
+    public void Dispose() { lock (gate) { if (process != null) process.Dispose(); } }
+}
+
 internal sealed class ReaderWindow : Form
 {
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
@@ -129,10 +215,12 @@ internal sealed class ReaderWindow : Form
     private const double LayoutWidth = 1920;
     private bool fittingViewport;
     private bool ready, preparingClose, mayClose;
+    private readonly OwnedBackend backend;
     public int ExitCode;
     public ReaderWindow(ShellOptions value)
     {
         options = value;
+        if (!options.Child) backend = new OwnedBackend(options);
         Text = "\u200b"; AccessibleName = "EzRead";
         Icon = new Icon(Path.Combine(options.Root, "static", "ezread.ico"), 32, 32);
         captionIcon = new Icon(Path.Combine(options.Root, "static", "window-icon-transparent.ico"), 16, 16);
@@ -148,6 +236,7 @@ internal sealed class ReaderWindow : Form
         if (options.SmokeReport != null) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
         Shown += async delegate { await InitializeWebView(); };
         FormClosing += OnClosing;
+        FormClosed += delegate { if (backend != null) { try { backend.Stop(); } catch (Exception exc) { Log("backend-close: " + exc.GetType().Name); } finally { backend.Dispose(); } } };
     }
     protected override void WndProc(ref Message message)
     {
@@ -187,6 +276,10 @@ internal sealed class ReaderWindow : Form
     {
         try {
             Log("initializing");
+            if (backend != null) {
+                try { await Task.Run((Action)backend.Capture); }
+                catch { if (options.SmokeReport == null) throw; }
+            }
             CoreWebView2Environment.GetAvailableBrowserVersionString();
             Log("runtime-detected");
             var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(options.Data, "webview2-profile"));
@@ -271,13 +364,14 @@ internal sealed class ReaderWindow : Form
     }
     private async void OnClosing(object sender, FormClosingEventArgs e)
     {
-        if (mayClose || !ready) { SaveBounds(); return; }
+        if (mayClose) { SaveBounds(); return; }
         e.Cancel = true;
         if (preparingClose) return;
         preparingClose = true;
         try {
             // ExecuteScriptAsync does not await JavaScript Promises. Use a small
             // explicit acknowledgement and poll it while the UI stays responsive.
+            if (ready) {
             string request = json.Serialize(Guid.NewGuid().ToString());
             await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult=null;window.__ezreadCloseRequest=" + request + ";(async()=>{let result=false;try{result=typeof ezreadPrepareDesktopClose==='function'?await ezreadPrepareDesktopClose():true;}catch{}if(window.__ezreadCloseRequest===" + request + ")window.__ezreadCloseResult=result;})();");
             string answer = "null";
@@ -289,6 +383,9 @@ internal sealed class ReaderWindow : Form
                 MessageBox.Show(this, "仍有内容未能保存，窗口暂未关闭。请确认草稿已保存后重试。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            }
+            SaveBounds();
+            if (backend != null) await Task.Run((Action)backend.Stop);
             mayClose = true; Close();
         } catch (Exception exc) { Log("close-save: " + exc.GetType().Name); MessageBox.Show(this, "无法确认草稿保存状态，请稍后重试关闭。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         finally { preparingClose = false; }

@@ -8,10 +8,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from ezread.config import data_directory as configured_data_directory
+from ezread.config import data_directory as configured_data_directory, listen_port
 
 ROOT = Path(__file__).resolve().parent
-URL = 'http://127.0.0.1:47831'
+PORT = listen_port()
+URL = f'http://127.0.0.1:{PORT}'
 
 
 def data_directory():
@@ -29,7 +30,8 @@ def _same_path(value, expected):
 
 
 def _read_status(endpoint):
-    with urllib.request.urlopen(URL + endpoint, timeout=.8) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(URL + endpoint, timeout=.8) as response:
         raw = response.read(65537)
     if len(raw) > 65536:
         raise ValueError('response too large')
@@ -41,7 +43,7 @@ def _read_status(endpoint):
 
 def _port_open():
     try:
-        with socket.create_connection(('127.0.0.1', 47831), timeout=.3):
+        with socket.create_connection(('127.0.0.1', PORT), timeout=.3):
             return True
     except OSError:
         return False
@@ -62,24 +64,46 @@ def running():
             status = _read_status('/api/status')
     except (OSError, ValueError, urllib.error.URLError):
         if _port_open():
-            raise RuntimeError('本机 47831 端口已被其他服务占用或尚未正常响应。\n'
+            raise RuntimeError(f'本机 {PORT} 端口已被其他服务占用或尚未正常响应。\n'
                                '请确认并关闭相应旧实例后重新打开 EzRead；启动器不会自动结束进程。') from None
         return False
     if not _same_path(status.get('data_dir'), expected):
         found = status.get('data_dir') if isinstance(status.get('data_dir'), str) else '无法识别'
-        raise RuntimeError(f'47831 端口上的服务使用另一处文献库，未打开该服务。\n'
+        raise RuntimeError(f'{PORT} 端口上的服务使用另一处文献库，未打开该服务。\n'
                            f'当前项目应使用：{expected}\n已运行服务使用：{found}\n'
                            '请确认并关闭旧实例后重新打开 EzRead；启动器不会自动结束进程。')
     if legacy or not _same_path(status.get('app_root'), ROOT):
-        raise RuntimeError(f'47831 端口上的服务不是当前目录的 EzRead，或运行的是旧版本。\n'
+        raise RuntimeError(f'{PORT} 端口上的服务不是当前目录的 EzRead，或运行的是旧版本。\n'
                            f'当前程序目录：{ROOT}\n'
                            '请确认并关闭旧实例后重新打开；启动器不会自动结束进程。')
     return True
 
 
 def ensure_server():
-    if running():
-        return
+    closing = False
+    for _ in range(100):
+        try:
+            alive = running()
+        except RuntimeError:
+            if not closing:
+                raise
+            time.sleep(.1)
+            continue
+        if not alive:
+            break
+        try:
+            state = _read_status('/api/health')
+        except (OSError, ValueError, urllib.error.URLError):
+            if not closing:
+                raise
+            time.sleep(.1)
+            continue
+        if not state.get('closing'):
+            return
+        closing = True
+        time.sleep(.1)
+    else:
+        raise RuntimeError('EzRead 上一次退出尚未完成，请稍后重新打开。')
     directory = data_directory()
     directory.mkdir(parents=True, exist_ok=True)
     executable = Path(sys.executable)
@@ -99,7 +123,7 @@ def ensure_server():
             raise RuntimeError(f'EzRead 后台启动失败，请查看日志：\n{directory / "server.log"}')
         time.sleep(.15)
     raise RuntimeError(f'EzRead 启动超时，请查看日志：\n{directory / "server.log"}\n'
-                       '也请确认 47831 端口未被其他实例占用。')
+                       f'也请确认 {PORT} 端口未被其他实例占用。')
 
 
 def open_window():
@@ -117,6 +141,8 @@ def main():
             ctypes.windll.user32.MessageBoxW(0, str(exc), 'EzRead', 0x10)
         except Exception:
             raise
+        return 1
+    return 0
 
 
 if __name__ == '__main__':

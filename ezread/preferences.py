@@ -4,6 +4,8 @@ from .context import ApplicationContext
 import math
 from datetime import datetime
 
+THEMES = ('paper', 'sage', 'graphite')
+
 
 def valid_year(value, minimum=1900):
     return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= datetime.now().year
@@ -13,7 +15,7 @@ def validate_settings(app: ApplicationContext, data):
     if not isinstance(data, dict):
         raise ValueError('设置必须是对象。')
     data = {k: v for k, v in data.items() if k in app.DEFAULT_SETTINGS}
-    choices = {'theme': ('paper', 'cream', 'sage', 'graphite')}
+    choices = {'theme': THEMES}
     for key, values in choices.items():
         if key in data and data[key] not in values:
             raise ValueError(key + ' 选项无效。')

@@ -1,5 +1,7 @@
 """Server --open must use the native shell and never open an unknown listener."""
 import sys
+import queue
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +13,9 @@ class ServerStartupTests(unittest.TestCase):
         with patch.object(server, 'init_db'), patch.object(server, 'all_docs', return_value=[]), \
              patch.object(server.threading, 'Thread'), patch.object(server, 'ThreadingHTTPServer', side_effect=binding), \
              patch.object(server, 'CANCEL', {}), patch('codex_usage.shutdown'), patch('codex_models.shutdown'), \
+             patch.object(server, 'SHUTDOWN', threading.Event()), patch.object(server, 'JOBS', queue.Queue()), \
+             patch.object(server, 'STRUCTURE_JOBS', queue.Queue()), patch.object(server._processes, 'attach_job'), \
+             patch.object(server._processes, 'shutdown'), patch.object(server._lifecycle, 'pause_jobs'), \
              patch.object(sys, 'argv', ['server.py', '--open', '--port', '51234']), \
              patch('desktop_runtime.open_desktop') as native:
             try:

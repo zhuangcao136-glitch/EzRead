@@ -34,25 +34,6 @@ function dateMs(value) { return value ? new Date(typeof value === "number" && va
 function importedAt(p) { return dateMs(p.created_at || p.imported_at); }
 function safeUrl(url) { if (typeof url !== "string" || !url.trim()) return ""; try { const parsed = new URL(url, location.href); return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : ""; } catch { return ""; } }
 function externalUrl(url) { return typeof url === "string" && /^https?:\/\//i.test(url.trim()) ? safeUrl(url) : ""; }
-function safeLinkedText(value) {
-  const text = asText(value), fragment = document.createDocumentFragment(), opening = /\[([^\]\n]+)\]\(/g;
-  let copied = 0, match;
-  while ((match = opening.exec(text))) {
-    let end = opening.lastIndex, depth = 1;
-    for (; end < text.length && depth; end++) {
-      if (text[end] === "\n") break;
-      if (text[end] === "(") depth++;
-      else if (text[end] === ")") depth--;
-    }
-    if (depth) continue;
-    const urlText = text.slice(opening.lastIndex, end - 1).trim();
-    const href = /\s/.test(urlText) ? "" : externalUrl(urlText);
-    fragment.append(document.createTextNode(text.slice(copied, match.index)));
-    fragment.append(href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, match[1]) : document.createTextNode(text.slice(match.index, end)));
-    copied = end; opening.lastIndex = end;
-  }
-  fragment.append(document.createTextNode(text.slice(copied))); return fragment;
-}
 function imageNode(src, attrs = {}) { const url = safeUrl(src); return url ? el("img", { src: url, loading: "lazy", alt: "论文插图", ...attrs }) : placeholderImage(); }
 function placeholderImage() { return el("div", { class: "paper-no-image" }, icon("image"), "等待选择封面"); }
 function ratio(p) { const t = translationOf(p); return Math.max(0, Math.min(100, Number(t.total) ? Number(t.done || 0) / Number(t.total) * 100 : 0)); }
@@ -60,8 +41,9 @@ function tierOf(p) { const tier = p.journal_tier; return Object.hasOwn(TIER_NAME
 function rankAppearance(p) {
   return { type: paperType(p), tier: tierOf(p) };
 }
-function rankBadges(p) {
+function rankBadges(p, { descriptive = false } = {}) {
   const tier = tierOf(p);
   const title = p.tier_needs_review ? "期刊全称、简称或 ISSN 冲突，请核对论文信息" : tier === "other" && paperType(p) === "journal" ? "未列入顶级或重要名单" : TIER_NAMES[tier];
-  return [el("span", { class: `rank-badge rank-${tier}`, title }, TIER_NAMES[tier])];
+  const label = descriptive ? ({ top: "顶级期刊", important: "重要期刊", other: "其他期刊", conference: "会议论文", preprint: "预印本" })[tier] : TIER_NAMES[tier];
+  return [el("span", { class: `rank-badge rank-${tier}`, title }, label)];
 }

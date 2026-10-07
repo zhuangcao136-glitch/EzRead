@@ -10,7 +10,7 @@ const readerRuntime = {
   savedSignature: "", savePromise: null, closePromise: null,
   notes: null, editor: null, libraryAnchor: null, lifecycleBound: false,
   layoutFrame: 0, restoring: false, splitSaveTimer: null,
-  selectionTranslations: new Map(), selectionClickUntil: 0, textLanguage: "auto"
+  textLanguage: "auto"
 };
 
 const READER_ZOOMS = [75, 100, 125, 150, 200];
@@ -166,7 +166,6 @@ async function openReader(id) {
   readerRuntime.thumbsOpen = false; readerRuntime.savedSignature = ""; readerRuntime.editor = null;
   readerRuntime.textLanguage = readerReadLocal("language", id)?.value === "original" ? "original" : "auto";
   if (typeof readerTextUI !== "undefined") { readerTextUI.editor = null; readerCloseTextPopup(true); }
-  readerRuntime.selectionTranslations.clear();
   const notesDraft = readerReadLocal("notes", id);
   readerRuntime.notes = { id, value: typeof notesDraft?.value === "string" ? notesDraft.value : p.notes || "", savedValue: p.notes || "", timer: null, saving: null, storageOk: true };
   renderReader(); openDialog("#reader-dialog");
@@ -261,7 +260,7 @@ async function closeReader() {
     if (failed && !preserved) { toast("保存失败，草稿也未能写入本机；请保留此窗口并重试。", "error", 8000); return false; }
     if (failed) toast("未保存内容已保留为本机草稿，请重新打开后核对。", "warn", 6500);
     if (typeof readerReleaseTextUI === "function") readerReleaseTextUI();
-    $("#reader-dialog").close(); readerRuntime.selectionTranslations.clear(); return true;
+    $("#reader-dialog").close(); return true;
   })().finally(() => { content.inert = false; readerRuntime.closePromise = null; });
   return readerRuntime.closePromise;
 }
@@ -593,10 +592,6 @@ function renderStructuredParagraph(entry) {
     text.replaceChildren(...sources.flatMap((b, i) => [i ? document.createTextNode(" ") : null,
       readerTextSpan(b, { class: ["authors", "affiliations"].includes(entry.role) && /^[\d,;*†‡\s]+$/.test(asText(b.text)) ? "is-marker" : "" })]).filter(Boolean));
   }
-  for (const b of sources) if (b.id !== active.id) for (const item of readerRuntime.selectionTranslations.get(b.id) || []) {
-    node.append(el("div", { class: `selection-translation ${item.error ? "is-error" : ""}` },
-      el("small", {}, item.source), el("p", {}, item.translation || item.error || "正在翻译…")));
-  }
   if (sources.some(b => b.translation_needs_review) && !$(".reader-source-review", node)) node.append(el("small", { class: "reader-source-review" }, "原文已修改，译文待核对"));
   return node;
 }
@@ -609,19 +604,10 @@ function renderBlock(b) {
     if (isReference || isFormula && !b.translation) node.append(el("div", { class: "block-label" }, isReference ? "参考文献 · 原文" : "公式 · 请对照原文"));
     node.append(el("p", { class: "translated-text" }, readerTextSpan(b)));
   }
-  for (const item of readerRuntime.selectionTranslations.get(b.id) || []) {
-    node.append(el("div", { class: `selection-translation ${item.error ? "is-error" : ""}` },
-      el("small", {}, item.source), el("p", {}, item.translation || (item.error ? item.error : "正在翻译…"))));
-  }
   if (b.is_table && b.image_url && !isFormula) node.append(imageNode(b.image_url, { alt: "原文表格", class: "reader-table-image" }));
   if (b.has_unparsed_math && !isFormula) node.append(el("div", { class: "block-label", title: "本段含无法可靠提取的数学字符，请查看左侧原 PDF。" }, "含公式 · 请核对原文"));
   if (b.translation_needs_review) node.append(el("small", { class: "reader-source-review" }, "原文已修改，译文待核对"));
   return node;
-}
-function blockActions(b) {
-  return el("div", { class: "block-actions" }, button(b.highlight ? "取消高亮" : "高亮段落", event => act(async () => {
-    await patchBlock(b.id, { highlight: !b.highlight }); refreshBlock(b.id); drawOriginalPage();
-  }, event.currentTarget), "secondary", "star"), button(b.note ? "编辑批注" : "添加批注", () => openBlockEditor(b.id, "note"), "secondary", "edit"), !b.is_formula && b.kind !== "reference" ? button("修订译文", () => openBlockEditor(b.id, "translation"), "secondary", "translate") : null);
 }
 function selectBlock(id, scrollChinese) {
   const b = state.reader?.blocks.find(x => x.id === id); if (!b) return;
@@ -663,6 +649,8 @@ async function patchBlock(id, patch) {
   else { const b = state.reader.blocks.find(x => x.id === id); if (b) Object.assign(b, patch); }
   state.readerRenderedSignature = paperSignature(state.reader); renderLibrary();
 }
+// Persisted paragraph drafts still restore through this editor; new selections
+// are edited by reader-text.js.
 function openBlockEditor(id, mode) {
   const b = state.reader?.blocks.find(x => x.id === id), node = findBlockNode(id); if (!b || !node) return;
   if (readerRuntime.editor) { readerRuntime.editor.text.focus({ preventScroll: true }); toast("请先保存或放弃当前段落编辑", "warn"); return; }

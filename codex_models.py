@@ -155,7 +155,7 @@ def _query(timeout=TIMEOUT):
     if not cli:
         raise ModelError('未找到官方 Codex，请先安装并登录 ChatGPT 账号。', 'missing_cli')
     try:
-        process = subprocess.Popen(
+        process = codex_bridge.spawn(
             [cli, 'app-server', '--stdio', '-c', 'forced_login_method="chatgpt"'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace',
@@ -239,6 +239,7 @@ def _query(timeout=TIMEOUT):
         reader.join(timeout=1)
         with _lock:
             _processes.discard(process)
+        codex_bridge._processes.release(process)
 
 
 def snapshot(force=False):
@@ -327,10 +328,6 @@ def resolve_config(model='', reasoning_effort=''):
     if reasoning_effort not in selected['supported_reasoning_efforts']:
         raise ModelError('所选模型不支持该推理强度，请重新选择。', 'unsupported_effort')
     return {'model': model, 'reasoning_effort': reasoning_effort}
-
-
-def validate_config(model='', reasoning_effort=''):
-    return resolve_config(model, reasoning_effort)
 
 
 def shutdown():

@@ -3,6 +3,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const DEFAULT_PREFERENCES = Object.freeze({ theme: "paper", ui_font_size: 16, reader_font_size: 18, reader_sync: true });
+const THEME_CHOICES = Object.freeze([["paper", "纸白"], ["sage", "浅绿"], ["graphite", "石墨"]]);
 const PAPER_TYPES = Object.freeze({ journal: "期刊论文", conference: "会议论文", preprint: "预印本", other: "其他文献" });
 const TIER_NAMES = Object.freeze({ top: "顶级", important: "重要", other: "其他", conference: "会议", preprint: "预印本" });
 const state = { papers: [], collections: [], settings: { ...DEFAULT_PREFERENCES }, status: null, usage: null, view: "all", collection: "", detail: null, detailFigure: null, reader: null, readerPage: 1, selectedBlock: null, zoom: "fit", loading: true, importing: false, query: "", pollBusy: false, selectionMode: false, selectedPapers: new Set(), readerRenderedSignature: null, detailRenderedSignature: null };

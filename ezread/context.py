@@ -26,6 +26,9 @@ class ApplicationContext(Protocol):
     STATIC: Path
     STATUS_CACHE: dict[str, Any]
     SELECTION_REQUESTS: Any
+    SELECTION_SESSION: Any
+    SHUTDOWN: Event
+    INSTANCE_ID: str
     STRUCTURE_JOBS: Queue[str]
     STRUCTURE_QUEUED: set[str]
     TRANSLATION_FIELDS: tuple[str, ...]
@@ -34,10 +37,10 @@ class ApplicationContext(Protocol):
     all_docs: Callable[..., Any]
     archive_translation: Callable[..., Any]
     archive_translation_draft: Callable[..., Any]
+    attach_desktop: Callable[..., Any]
     batches: Callable[..., Any]
     codex_status: Callable[..., Any]
     commit_import_result: Callable[..., Any]
-    crossref_metadata: Callable[..., Any]
     db: Callable[..., Any]
     enqueue: Callable[..., Any]
     enrich_publication: Callable[..., Any]
@@ -51,6 +54,7 @@ class ApplicationContext(Protocol):
     paper_file_action: Callable[..., Any]
     patch_paper_fields: Callable[..., Any]
     prepare_translation: Callable[..., Any]
+    prepare_shutdown: Callable[..., Any]
     public_doc: Callable[..., Any]
     put_doc: Callable[..., Any]
     restore_translation: Callable[..., Any]

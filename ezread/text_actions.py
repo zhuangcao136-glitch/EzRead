@@ -199,19 +199,24 @@ def translate(app, pid, data):
     from .selection_requests import ensure_current
     selected, ranges = selected_text(app, pid, data)
     event = app.SELECTION_REQUESTS.begin(pid, data)
+    progress = lambda value: app.SELECTION_REQUESTS.report(pid, data, value)
     try:
         ensure_current(event)
+        progress({'text': '正在核对登录状态和翻译配置…'})
         if not app.codex_status().get('authenticated'):
             raise ValueError('请先在官方 Codex 中登录 ChatGPT 账号。')
         settings = app.settings()
         config = codex_models.resolve_config(settings['selection_translation_model'], settings['selection_translation_reasoning_effort'])
         ensure_current(event)
         target = 'en' if all(r['language'] == 'translation' for r in ranges) else 'zh'
-        result = codex_bridge.translate_selection(selected, **config, target_language=target, cancel_event=event)
+        result = codex_bridge.translate_selection(selected, **config, target_language=target, cancel_event=event, on_progress=progress, paper_id=pid)
         ensure_current(event)
         # A slow model response must not survive a revision to the source text.
         selected_text(app, pid, data)
         return {'translation': result, 'target_language': target, 'method': 'model'}
+    except Exception as exc:
+        progress({'kind': 'error', 'text': str(exc)})
+        raise
     finally:
         app.SELECTION_REQUESTS.finish(pid, data, event)
 

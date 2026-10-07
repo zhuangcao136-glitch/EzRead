@@ -1,0 +1,13 @@
+{
+  "overrides": [
+    {
+      "files": "*.css",
+      "options": {
+        "tabWidth": 2,
+        "useTabs": false,
+        "printWidth": 100,
+        "endOfLine": "lf"
+      }
+    }
+  ]
+}

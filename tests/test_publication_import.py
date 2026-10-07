@@ -1,6 +1,5 @@
 """Offline publication extraction, consent and library-preserving enrichment."""
 import copy
-import json
 from pathlib import Path
 import queue
 import sys
@@ -225,6 +224,42 @@ class EnrichmentTests(unittest.TestCase):
         self.assertEqual(result['metadata_enrichment']['status'], 'declined')
         self.assertEqual(result['blocks'], self.doc['blocks'])
 
+    def test_closing_a_complete_check_does_not_downgrade_it_or_start_another_search(self):
+        with patch.object(publication, '_read', return_value={'message': {'items': [crossref_item()]}}):
+            checked = server.enrich_publication(self.doc['id'], {'consent': True})
+        with patch.object(publication, '_read') as request:
+            closed = server.enrich_publication(self.doc['id'], {'consent': False})
+            request.assert_not_called()
+        self.assertEqual(closed['metadata_enrichment']['status'], 'complete')
+        self.assertEqual(closed['metadata_enrichment']['checked_at'], checked['metadata_enrichment']['checked_at'])
+        self.assertEqual(closed['blocks'], checked['blocks'])
+
+    def test_legacy_declined_status_recovers_a_successful_check_without_searching_or_mutating_data(self):
+        with patch.object(publication, '_read', return_value={'message': {'items': [crossref_item()]}}):
+            checked = server.enrich_publication(self.doc['id'], {'consent': True})
+        checked['metadata_enrichment']['status'] = 'declined'
+        before = copy.deepcopy(checked)
+        with patch.object(publication, '_read') as request:
+            self.assertEqual(publication.assessment(checked)['status'], 'complete')
+            request.assert_not_called()
+        self.assertEqual(checked, before)
+        for changes in ({'conflicts': ['year']}, {'error': 'Network unavailable'}, {'checked_at': None}):
+            with self.subTest(changes=changes):
+                uncertain = copy.deepcopy(checked)
+                uncertain['metadata_enrichment'].update(changes)
+                self.assertEqual(publication.assessment(uncertain)['status'], 'declined')
+
+    def test_meaningful_publication_edit_invalidates_the_check_but_notes_and_unchanged_fields_do_not(self):
+        with patch.object(publication, '_read', return_value={'message': {'items': [crossref_item()]}}):
+            checked = server.enrich_publication(self.doc['id'], {'consent': True})
+        stamp = checked['metadata_enrichment']['checked_at']
+        server.patch_paper_fields(checked, {'notes': 'new notes', 'journal': checked['journal']})
+        self.assertEqual(checked['metadata_enrichment']['checked_at'], stamp)
+        server.patch_paper_fields(checked, {'page_range': '1-20'})
+        self.assertIsNone(checked['metadata_enrichment']['checked_at'])
+        self.assertEqual(checked['metadata_enrichment']['previous_checked_at'], stamp)
+        self.assertEqual(checked['blocks'], self.doc['blocks'])
+
     def test_public_conference_label_derives_abbreviation_without_mutating_document(self):
         doc = {**self.doc, 'paper_type': 'conference', 'conference_name':
                '2023 IEEE International Conference on Automation Science and Engineering (CASE)', 'conference_abbr': ''}
@@ -270,9 +305,12 @@ class EnrichmentTests(unittest.TestCase):
     def test_import_never_calls_external_metadata_even_if_doi_present(self):
         extracted = {'metadata': {'title': TITLE, 'doi': '10.1109/JSEN.2024.3471812'},
             'pages': [{'number': 1}], 'blocks': [], 'figures': []}
-        with patch('pdf_tools.extract_document', return_value=extracted), patch.object(server, 'crossref_metadata') as old, patch.object(publication, '_read') as request:
+        with patch('pdf_tools.extract_document', return_value=extracted), \
+             patch.object(publication, '_read') as request, \
+             patch('urllib.request.urlopen', side_effect=AssertionError('Import must not fetch remote metadata')) as transport:
             result = server.import_pdf(b'%PDF-1.7 mocked', 'test.pdf')
-            old.assert_not_called(); request.assert_not_called()
+            request.assert_not_called()
+            transport.assert_not_called()
         self.assertEqual(result['metadata_enrichment']['status'], 'needs_consent')
 
     def test_wrong_paper_and_author_are_rejected(self):

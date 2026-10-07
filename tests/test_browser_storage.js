@@ -58,4 +58,18 @@ storage = fixture({ "ezread-sort-direction": "asc" });
 assert.equal(context.readBrowserSetting("direction", storage), "asc");
 assert.equal(context.writeBrowserSetting("sort", "invalid", storage), false);
 assert.equal(storage.entries.get("ezread-sort-direction"), "asc");
-console.log("Browser storage: migration, new-key precedence, write/read failures and preference preservation passed.");
+context.document = { documentElement: { dataset: {}, style: { setProperty() {} } }, hidden: false, querySelectorAll: () => [] };
+for (const file of ["state.js", "preferences.js"]) {
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../static/core", file), "utf8"), context);
+}
+for (const theme of ["paper", "sage", "graphite", "cream", "light", "unknown", null]) {
+  context.localStorage = fixture(); context.themeUnderTest = theme;
+  vm.runInContext("state.settings.theme = themeUnderTest; state.settings.ui_font_size = 20; applyPreferences();", context);
+  const expected = ["paper", "sage", "graphite"].includes(theme) ? theme : "paper";
+  assert.equal(context.document.documentElement.dataset.theme, expected);
+  assert.equal(vm.runInContext("state.settings.theme", context), expected);
+  const saved = JSON.parse(context.localStorage.entries.get("ezread-preferences"));
+  assert.equal(saved.theme, expected);
+  assert.equal(saved.ui_font_size, 20);
+}
+console.log("Browser storage: migration, write/read failures, supported themes and retired-theme fallback passed.");

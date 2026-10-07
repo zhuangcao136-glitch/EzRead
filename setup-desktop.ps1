@@ -6,6 +6,12 @@ $taskIcon = Join-Path $taskAppRoot 'static\ezread.ico'
 if (!(Test-Path -LiteralPath $taskLauncher) -or !(Test-Path -LiteralPath $taskIcon)) {
     throw 'EzRead launcher or icon is missing. Keep the complete application folder together.'
 }
+# A content-specific filename prevents Windows from reusing the previous artwork.
+$taskIconHash = (Get-FileHash -LiteralPath $taskIcon -Algorithm SHA256).Hash.ToLowerInvariant()
+$taskIconCache = Join-Path $taskAppRoot 'work\shortcut-icons'
+New-Item -ItemType Directory -Path $taskIconCache -Force | Out-Null
+$taskDesktopIcon = Join-Path $taskIconCache ('ezread-' + $taskIconHash + '.ico')
+Copy-Item -LiteralPath $taskIcon -Destination $taskDesktopIcon -Force
 $taskDesktop = [Environment]::GetFolderPath('Desktop')
 $taskShortcutPath = Join-Path $taskDesktop 'EzRead.lnk'
 $taskShell = New-Object -ComObject WScript.Shell
@@ -13,12 +19,12 @@ $taskShortcut = $taskShell.CreateShortcut($taskShortcutPath)
 $taskShortcut.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
 $taskShortcut.Arguments = '"' + $taskLauncher + '"'
 $taskShortcut.WorkingDirectory = $taskAppRoot
-$taskShortcut.IconLocation = $taskIcon + ',0'
+$taskShortcut.IconLocation = $taskDesktopIcon + ',0'
 $taskShortcut.Description = 'EzRead'
 $taskShortcut.WindowStyle = 7
 $taskShortcut.Save()
 $taskCheck = $taskShell.CreateShortcut($taskShortcutPath)
-if ($taskCheck.TargetPath -ne $taskShortcut.TargetPath -or $taskCheck.Arguments -ne $taskShortcut.Arguments) {
+if ($taskCheck.TargetPath -ne $taskShortcut.TargetPath -or $taskCheck.Arguments -ne $taskShortcut.Arguments -or $taskCheck.IconLocation -ne $taskShortcut.IconLocation) {
     throw 'The saved desktop shortcut failed verification.'
 }
 [PSCustomObject]@{

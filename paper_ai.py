@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 import queue
 import re
-import secrets
-import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -159,7 +157,7 @@ class CodexSession:
         if not cli:
             raise SessionError('未找到官方 Codex。')
         self.temp = tempfile.TemporaryDirectory(prefix='ezread-paper-ai-')
-        self.process = subprocess.Popen([cli,'app-server','--stdio',
+        self.process = codex_bridge.spawn([cli,'app-server','--stdio',
             '-c','forced_login_method="chatgpt"', '-c','approval_policy="never"',
             '-c','features.shell_tool=false', '-c','features.unified_exec=false',
             '-c','features.apps=false', '-c','web_search="disabled"'],

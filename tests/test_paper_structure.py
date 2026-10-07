@@ -97,7 +97,6 @@ class StructureTests(unittest.TestCase):
 
     def test_auto_queue_is_single_flight_and_background_commit_preserves_latest_notes(self):
         import queue
-        from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as folder:
             data = Path(folder)
             jobs = queue.Queue()

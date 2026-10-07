@@ -39,6 +39,7 @@ def reveal_pdf(path: Path):
         raise ValueError('在文件夹显示需要在 Windows 上使用。')
     explorer = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'explorer.exe'
     try:
-        subprocess.Popen([str(explorer), '/select,', str(path.resolve(strict=True))])
+        subprocess.Popen([str(explorer), '/select,', str(path.resolve(strict=True))],
+                         creationflags=getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0))
     except OSError:
         raise ValueError('未能打开文件夹，请稍后重试。') from None

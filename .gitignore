@@ -8,6 +8,7 @@ desktop/bin/
 venv/
 node_modules/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 .DS_Store
@@ -35,6 +36,11 @@ __pycache__/
 *.zip
 *.lnk
 *.bak
+*.old
+*.orig
+*.rej
+*.swp
+*~
 .env
 .env.*
 !.env.example

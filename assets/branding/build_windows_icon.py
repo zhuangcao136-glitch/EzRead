@@ -1,55 +1,34 @@
-"""Build a crisp small-surface version of the approved EzRead book icon.
+"""Build Windows icons from the same original used by the EzRead app UI.
 
-The detailed original remains in ezread-icon.png for the app UI. Every ICO
-entry uses the same flat silhouette so Windows cannot select a soft bitmap
-at a different display scale.
+Each ICO entry is resized directly from ezread-icon.png, preserving the
+approved artwork, shading and transparency at every Windows display size.
 """
 
 from io import BytesIO
 from pathlib import Path
 import struct
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = ROOT / "static"
+SOURCE = STATIC / "ezread-icon.png"
 DESTINATION = STATIC / "ezread.ico"
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
-def small_book(size):
-    scale = size * 4 / 100
-    canvas = Image.new("RGBA", (size * 4, size * 4), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-
-    def point(x, y):
-        return (round(x * scale), round(y * scale))
-
-    def polygon(points, color):
-        draw.polygon([point(*p) for p in points], fill=color)
-
-    draw.rounded_rectangle((*point(1, 1), *point(99, 99)),
-                           radius=round(20 * scale), fill="#174c38")
-
-    # A single light shape per page gives the book a strong outline at 16 px.
-    polygon([(12, 31), (18, 27), (28, 27), (39, 30), (50, 38),
-             (50, 74), (42, 68), (32, 65), (23, 65), (12, 68)], "#fff9ea")
-    polygon([(88, 31), (82, 27), (72, 27), (61, 30), (50, 38),
-             (50, 74), (58, 68), (68, 65), (77, 65), (88, 68)], "#fff9ea")
-    polygon([(47, 37), (53, 37), (53, 78), (50, 75), (47, 78)], "#e0aa4f")
-    return canvas.resize((size, size), Image.Resampling.BOX)
-
-
 def main():
     encoded = []
-    for size in SIZES:
-        icon = small_book(size)
-        stream = BytesIO()
-        icon.save(stream, format="PNG")
-        encoded.append(stream.getvalue())
+    with Image.open(SOURCE) as image:
+        original = image.convert("RGBA")
+        for size in SIZES:
+            icon = original.resize((size, size), Image.Resampling.LANCZOS)
+            stream = BytesIO()
+            icon.save(stream, format="PNG")
+            encoded.append(stream.getvalue())
 
-    # PNG-compressed ICO entries preserve the exact hand-tuned small images.
+    # Explicit PNG entries preserve each original-derived image and its alpha.
     header = struct.pack("<HHH", 0, 1, len(SIZES))
     offset = 6 + len(SIZES) * 16
     entries = []

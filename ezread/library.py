@@ -1,13 +1,10 @@
 """Paper metadata, public documents and native file actions."""
 from __future__ import annotations
 from .context import ApplicationContext
-from .config import VERSION
-import json
 import re
 import shutil
 import sqlite3
 import urllib.parse
-import urllib.request
 
 
 def paper_file_action(app: ApplicationContext, pid, action):
@@ -57,37 +54,6 @@ def journal_abbr(name):
     return aliases.get(cleaned, name)
 
 
-def crossref_metadata(doi):
-    if not doi:
-        return {}
-    url = 'https://api.crossref.org/works/' + urllib.parse.quote(doi, safe='')
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': f'EzRead/{VERSION} (personal desktop reference library)'})
-        with urllib.request.urlopen(req, timeout=7) as response:
-            item = json.load(response)['message']
-        authors = [' '.join(filter(None, [a.get('given'), a.get('family')])) for a in item.get('author', [])]
-        affiliations = sorted({x['name'] for a in item.get('author', []) for x in a.get('affiliation', []) if x.get('name')})
-        dates = item.get('published', item.get('issued', {})).get('date-parts', [[]])[0]
-        venue = (item.get('container-title') or [''])[0]
-        record_type = item.get('type')
-        event = item.get('event') if isinstance(item.get('event'), dict) else {}
-        classification = {}
-        if record_type == 'journal-article':
-            classification = {'paper_type': 'journal'}
-        elif record_type in ('proceedings-article', 'proceedings'):
-            conference = event.get('name') or venue
-            classification = {'paper_type': 'conference', 'conference_name': conference,
-                              'conference_track': 'workshop' if re.search(r'\bworkshop|companion\b', conference, re.I) else 'unknown'}
-        elif record_type == 'posted-content':
-            classification = {'paper_type': 'preprint'}
-        # An arXiv identifier alone says nothing about later publication status.
-        return {'title': (item.get('title') or [''])[0], 'journal': venue if record_type == 'journal-article' else '',
-                'authors': authors, 'affiliations': affiliations, 'year': dates[0] if dates else None,
-                'metadata_source': url, 'crossref_type': record_type, **classification}
-    except Exception:
-        return {}
-
-
 def media_url(pid, filename):
     return '/media/' + pid + '/' + urllib.parse.quote(str(filename).replace('\\', '/'), safe='/')
 
@@ -118,6 +84,7 @@ def public_doc(app: ApplicationContext, doc, full=False):
               'quartiles', 'metrics_source', 'metrics_sources', 'metrics_status', 'metrics_error',
               'metrics_note', 'conference_rankings', 'read_state', 'reading_structure', 'collection_assignment'}
     hidden.update({'text_annotations', 'text_revision_history', 'text_action_receipts'})
+    hidden.update({'team', 'team_sources', 'team_status', 'team_error'})
     out = {k: v for k, v in doc.items() if k not in hidden}
     from .publication import assessment
     out['metadata_enrichment'] = assessment(doc)
@@ -168,8 +135,18 @@ def public_doc(app: ApplicationContext, doc, full=False):
 
 
 def patch_paper_fields(doc, fields):
-    doc.update(fields)
     import paper_metadata
+    publication_changed = any(key in fields and fields[key] != doc.get(key)
+                              for key in (*paper_metadata.PUBLICATION_FIELDS, 'title', 'paper_type', 'conference_abbr'))
+    doc.update(fields)
+    saved = doc.get('metadata_enrichment')
+    if publication_changed and isinstance(saved, dict) and saved.get('checked_at'):
+        from .publication import assessment
+        checked = saved['checked_at']
+        saved = assessment(doc)
+        saved.update(checked_at=None, previous_checked_at=checked,
+                     status='needs_consent' if saved['missing'] else 'complete')
+        doc['metadata_enrichment'] = saved
     provenance = doc.setdefault('metadata_provenance', {})
     for key in (*paper_metadata.PUBLICATION_FIELDS, 'title', 'paper_type', 'conference_abbr'):
         if key in fields:

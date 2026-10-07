@@ -1,5 +1,4 @@
 """Range annotations and revisions use a temporary SQLite library and fake models."""
-import copy
 import json
 from pathlib import Path
 import tempfile
@@ -146,6 +145,7 @@ class TextActionTests(unittest.TestCase):
         with patch.object(codex_bridge, 'translate_selection', return_value='模拟译文') as inference:
             result = actions.translate(server, PID, {'ranges': [selected], 'selected_text': 'client cannot replace source'})
         self.assertEqual(inference.call_args.args[0], 'Changed')
+        self.assertEqual(inference.call_args.kwargs['paper_id'], PID)
         self.assertEqual(result['translation'], '模拟译文')
 
     def test_dictionary_translation_never_checks_login_or_calls_model(self):
@@ -164,6 +164,57 @@ class TextActionTests(unittest.TestCase):
             return 'stale result'
         with patch.object(codex_bridge, 'translate_selection', side_effect=revise_while_waiting), self.assertRaises(actions.TextConflict):
             actions.translate(server, PID, {'ranges': [selected], 'selected_text': 'First'})
+
+    def test_http_progress_is_visible_during_inference_and_retained_after_failure(self):
+        from ezread.selection_requests import SelectionRequests
+        started, release = threading.Event(), threading.Event()
+        result = []
+        before = server.get_doc(PID)
+        data = {'action': 'translate_sentence', 'ranges': [self.selection()], 'selected_text': 'sentence',
+                'client_id': 'client-progress-0123456789', 'request_id': 'request-progress-0123456789'}
+        listener = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        base = f'http://127.0.0.1:{listener.server_port}/api/papers/{PID}'
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        def model(*args, **kwargs):
+            kwargs['on_progress']({'kind': 'diagnostic', 'text': '网络不可用，正在重连 1/5'})
+            kwargs['on_progress']({'kind': 'output', 'text': '部分译文'})
+            started.set()
+            release.wait(2)
+            raise codex_bridge.TranslationError('网络连接失败。', code='network')
+        def post():
+            req = urllib.request.Request(base + '/text-actions', data=json.dumps(data).encode(),
+                                         headers={'Content-Type': 'application/json'})
+            try:
+                opener.open(req, timeout=3)
+            except urllib.error.HTTPError as error:
+                result.append((error.code, json.load(error)))
+        def progress(**extra):
+            query = urllib.parse.urlencode({key: data[key] for key in ('client_id', 'request_id')} | extra)
+            with opener.open(base + '/selection-progress?' + query, timeout=2) as response:
+                return json.load(response)
+        with patch.object(server, 'PORT', listener.server_port), \
+             patch.object(server, 'SELECTION_REQUESTS', SelectionRequests()), \
+             patch.object(codex_bridge, 'translate_selection', side_effect=model):
+            host = threading.Thread(target=listener.serve_forever, daemon=True); host.start()
+            worker = threading.Thread(target=post); worker.start()
+            try:
+                self.assertTrue(started.wait(1))
+                running = progress()
+                self.assertFalse(running['done'])
+                self.assertEqual(running['output'], '部分译文')
+                self.assertIn('网络不可用', running['events'][-1]['text'])
+                self.assertEqual(progress(request_id='another-request-0123456789')['events'], [])
+                release.set(); worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(result[0][0], 502)
+                final = progress()
+                self.assertTrue(final['done'])
+                self.assertEqual(final['events'][-1]['text'], '网络连接失败。')
+                self.assertEqual(len(final['events']), 1)
+                self.assertEqual(server.get_doc(PID), before)
+            finally:
+                release.set(); worker.join(3)
+                listener.shutdown(); listener.server_close(); host.join()
 
     def test_retranslate_uses_revised_english_and_keeps_old_snapshot(self):
         self.apply('revise', [self.selection(quote='First')], replacement='Corrected')

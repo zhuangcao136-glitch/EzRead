@@ -1,5 +1,4 @@
 """Real browser selection events + real HTTP/storage, with synthetic papers/models."""
-import contextlib
 import json
 import os
 from pathlib import Path
@@ -19,10 +18,13 @@ import codex_usage
 import codex_bridge
 import paper_ai
 import paper_structure
+from ezread.selection_output import diagnostic
 
 PID = '0123456789abcdef'
 calls = []
+preparations = []
 slow_model = False
+progress_mode = ''
 
 
 def main():
@@ -41,6 +43,21 @@ def main():
         def translate(text, **kwargs):
             record = {'text': text, 'target_language': kwargs.get('target_language'), 'cancelled': False}
             calls.append(record)
+            if progress_mode:
+                progress = kwargs.get('on_progress')
+                event = kwargs.get('cancel_event')
+                for value in (
+                        {'text': '模型已接收请求，等待输出…'},
+                        {'kind': 'diagnostic', 'text': diagnostic('Network is not available. Reconnecting... 1/5')},
+                        {'kind': 'output', 'text': '模拟正在输出的部分译文'},
+                        {'kind': 'diagnostic', 'text': diagnostic('Stream disconnected before completion; retrying 2/5')}):
+                    if progress: progress(value)
+                    if event is not None and event.wait(.7):
+                        record['cancelled'] = True
+                        raise codex_bridge.TranslationError('此翻译请求已取消。', code='cancelled')
+                if progress_mode == 'failure':
+                    raise codex_bridge.TranslationError('无法连接 Codex 服务，请检查网络。', code='network')
+                if progress: progress({'text': '翻译完成。'})
             if slow_model:
                 event = kwargs.get('cancel_event')
                 for _ in range(100):
@@ -49,6 +66,7 @@ def main():
                         raise codex_bridge.TranslationError('此翻译请求已取消。', code='cancelled')
             return '模拟划线译文：' + text
         codex_bridge.translate_selection = translate
+        codex_bridge.prepare_selection = lambda **kwargs: preparations.append({'model': kwargs.get('model')})
         paper_ai.translate_batch = lambda *args, **kwargs: ('mock-thread', {b['id']: '重译：' + b['text'] for b in args[3]})
         doc = {'id': PID, 'hash': 'synthetic-original-pdf', 'title': 'Reader interaction fixture', 'authors': ['Test Author'],
                'journal': 'Synthetic Journal', 'year': 2026, 'deleted': False, 'translation': {'status': 'completed'},
@@ -77,12 +95,15 @@ def main():
                 if native and self.path == '/__test/native-driver.js':
                     self.send_file(ROOT / 'tests/browser_reader_native.js'); return
                 if self.path == '/__test/state':
-                    self.send_json({'calls': calls, 'doc': server.get_doc(PID)}); return
+                    self.send_json({'calls': calls, 'preparations': preparations, 'doc': server.get_doc(PID)}); return
                 super().do_GET()
             def do_POST(self):
-                global slow_model
+                global slow_model, progress_mode
                 if self.path == '/__test/model-delay':
                     slow_model = bool(self.read_json().get('enabled'))
+                    self.send_json({'ok': True}); return
+                if self.path == '/__test/model-progress':
+                    progress_mode = self.read_json().get('mode', '')
                     self.send_json({'ok': True}); return
                 if self.path == '/__test/native-results':
                     (work / 'reader-text-webview2-verification.json').write_text(json.dumps({**self.read_json(), 'run_id': run_id},ensure_ascii=False,indent=2),encoding='utf-8')

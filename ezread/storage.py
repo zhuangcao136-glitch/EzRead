@@ -1,6 +1,7 @@
 """SQLite connection, documents and settings persistence."""
 from __future__ import annotations
 from .context import ApplicationContext
+from .preferences import THEMES
 import copy
 import contextlib
 import json
@@ -82,6 +83,6 @@ def settings(app: ApplicationContext):
         for k, v in con.execute('SELECT key,value FROM settings'):
             if k in app.DEFAULT_SETTINGS:
                 out[k] = json.loads(v)
-    if out.get('theme') == 'light':
-        out['theme'] = 'paper'
+    if out.get('theme') not in THEMES:
+        out['theme'] = app.DEFAULT_SETTINGS['theme']
     return out

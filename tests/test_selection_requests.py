@@ -49,6 +49,26 @@ class CancellationTests(unittest.TestCase):
         first = self.jobs.begin(PID, request())
         self.jobs.shutdown()
         self.assertTrue(first.is_set())
+    def test_progress_is_request_scoped_and_survives_completion(self):
+        one, two = request(1), request(2, client='b')
+        event = self.jobs.begin(PID, one)
+        self.jobs.begin(PID, two)
+        self.jobs.report(PID, one, {'text': '网络不可用，正在重连', 'kind': 'diagnostic'})
+        self.jobs.report(PID, one, {'text': '部分译文', 'kind': 'output'})
+        self.jobs.report(PID, one, {'text': '正在返回当前译文'})
+        snapshot = self.jobs.snapshot(PID, one)
+        self.assertFalse(snapshot['done'])
+        self.assertEqual(snapshot['output'], '部分译文')
+        self.assertEqual(len(snapshot['events']), 1)
+        self.assertEqual(snapshot['events'][0]['text'], '正在返回当前译文')
+        self.assertEqual(self.jobs.snapshot(PID, two)['events'], [])
+        snapshot['events'][0]['text'] = 'mutated client copy'
+        self.jobs.finish(PID, one, event)
+        final = self.jobs.snapshot(PID, one)
+        self.assertTrue(final['done'])
+        self.assertEqual(final['events'][0]['text'], '正在返回当前译文')
+        self.jobs.report(PID, one, {'text': 'late stale event'})
+        self.assertEqual(len(self.jobs.snapshot(PID, one)['events']), 1)
 
 
 if __name__ == '__main__': unittest.main()

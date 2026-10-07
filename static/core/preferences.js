@@ -1,7 +1,9 @@
 function currentPreferences() { return Object.fromEntries(Object.keys(DEFAULT_PREFERENCES).map(key => [key, state.settings[key] ?? DEFAULT_PREFERENCES[key]])); }
 function applyPreferences() {
   const p = currentPreferences(), root = document.documentElement;
-  root.dataset.theme = ["paper", "cream", "sage", "graphite"].includes(p.theme) ? p.theme : "paper";
+  p.theme = THEME_CHOICES.some(([value]) => value === p.theme) ? p.theme : DEFAULT_PREFERENCES.theme;
+  state.settings.theme = p.theme;
+  root.dataset.theme = p.theme;
   root.dataset.pageHidden = String(document.hidden);
   root.style.setProperty("--ui-font-size", `${Math.max(14, Math.min(22, Number(p.ui_font_size) || 16))}px`);
   root.style.setProperty("--reader-font-size", `${Math.max(14, Math.min(28, Number(p.reader_font_size) || 18))}px`);

@@ -1,6 +1,12 @@
 // Composition: polling, event wiring and application startup.
+let selectionPreparation = null;
+function prepareSelectionSession() {
+  if (!selectionPreparation) selectionPreparation = api("/api/selection-session", { method: "POST", body: {} })
+    .catch(() => null); // Keep the library usable; a requested translation can retry preparation.
+  return selectionPreparation;
+}
 function paperSignature(p) {
-  const t = translationOf(p); return JSON.stringify([p.updated_at, p.text_actions_revision, t.status, t.done, t.total, t.error, p.summarize_status, p.team_status, p.summary, p.team, p.structure_status, p.structure_error, p.collection, p.collection_assignment, p.journal_tier, p.tier_needs_review, p.paper_type, p.conference_name, p.conference_abbr]);
+  const t = translationOf(p); return JSON.stringify([p.updated_at, p.text_actions_revision, t.status, t.done, t.total, t.error, p.summarize_status, p.summary, p.structure_status, p.structure_error, p.collection, p.collection_assignment, p.journal_tier, p.tier_needs_review, p.paper_type, p.conference_name, p.conference_abbr]);
 }
 async function poll() {
   if (state.pollBusy || state.importing || document.hidden) return;
@@ -19,9 +25,9 @@ async function poll() {
       if (state.readerRenderedSignature !== paperSignature(readerSummary)) await refreshReader();
     }
     if ($("#detail-dialog").open && detailSummary && !$("#reader-dialog").open && !focusedInput && !$("#detail-collection-menu")?.matches(":popover-open") && !$("#edit-dialog").open && !$("#crop-dialog").open && state.detailRenderedSignature !== paperSignature(detailSummary)) {
-      const scrollTop = $("#detail-dialog").scrollTop;
+      const scrollTop = $("#detail-scroll").scrollTop;
       const p = normalizeDetail(await api(`/api/papers/${encodeURIComponent(detailId)}`));
-      if (state.detail?.id === detailId && $("#detail-dialog").open && !$("#detail-collection-menu")?.matches(":popover-open")) { state.detail = p; renderDetail(); $("#detail-dialog").scrollTop = scrollTop; }
+      if (state.detail?.id === detailId && $("#detail-dialog").open && !$("#detail-collection-menu")?.matches(":popover-open")) { state.detail = p; renderDetail(); $("#detail-scroll").scrollTop = scrollTop; }
     }
   } catch { /* Keep saved views usable during a temporary local-server interruption. */ }
   finally { state.pollBusy = false; }
@@ -108,7 +114,7 @@ async function init() {
   const results = await Promise.allSettled([api("/api/settings"), api("/api/papers")]);
   if (results[0].status === "fulfilled") state.settings = { ...state.settings, ...results[0].value };
   applyPreferences();
-  if (results[1].status === "fulfilled") { state.papers = results[1].value.papers || []; state.collections = list(results[1].value.collections); state.loading = false; renderLibrary(); }
+  if (results[1].status === "fulfilled") { state.papers = results[1].value.papers || []; state.collections = list(results[1].value.collections); state.loading = false; renderLibrary(); void prepareSelectionSession(); }
   else {
     state.loading = false; $("#result-count").textContent = "连接未完成"; $("#paper-grid").replaceChildren(el("div", { class: "no-results", style: { columnSpan: "all" } }, el("h3", {}, "暂时无法打开本地文献库"), el("p", { class: "small" }, results[1].reason.message), button("重新连接", () => act(() => loadLibrary(true)), "primary", "", { style: { marginTop: "17px" } }))); toast("请确认 EzRead 本地服务正在运行", "error", 7000);
   }

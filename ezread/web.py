@@ -84,8 +84,14 @@ def handler_for(app: ApplicationContext):
             try:
                 parts = urllib.parse.urlparse(self.path)
                 path = urllib.parse.unquote(parts.path)
-                if path == '/api/health':
-                    self.send_json({'app_root': str(app.ROOT), 'data_dir': str(app.DATA), 'pid': os.getpid(), 'version': app.VERSION})
+                if app.SHUTDOWN.is_set() and path != '/api/health':
+                    self.send_json({'error': '应用正在关闭，任务已停止。'}, 503)
+                    return
+                if path == '/api/selection-session':
+                    self.send_json(app.SELECTION_SESSION.snapshot())
+                elif path == '/api/health':
+                    self.send_json({'app_root': str(app.ROOT), 'data_dir': str(app.DATA), 'pid': os.getpid(), 'version': app.VERSION,
+                                    'instance_id': app.INSTANCE_ID, 'lifecycle': 1, 'closing': app.SHUTDOWN.is_set()})
                 elif path == '/api/papers':
                     docs = app.all_docs()
                     collections = set(app.settings().get('collections', [])) | {d.get('collection') for d in docs if d.get('collection')}
@@ -122,7 +128,7 @@ def handler_for(app: ApplicationContext):
                         for file in app.LIBRARY.rglob('*'):
                             if file.is_file() and file.suffix.lower() in ('.pdf', '.jpg', '.png', '.json'):
                                 z.write(file, 'data/library/' + file.relative_to(app.LIBRARY).as_posix())
-                        z.writestr('RESTORE.txt', '关闭 EzRead 后，将本备份中的 data 文件夹复制到 EzRead 应用目录。原 data 文件夹请先另行备份。library.json 可用于其他软件读取。')
+                        z.writestr('RESTORE.txt', f'关闭 EzRead 窗口与对应后台服务后，将本备份中 data 文件夹的完整内容复制到文献库数据目录：\n{app.DATA}\n恢复前先完整备份目标数据目录，不直接合并两份数据库。默认文献库位于程序目录下的 data，EZREAD_DATA_DIR 可指定其他目录。library.json 可用于其他软件读取。')
                     snapshot.unlink(missing_ok=True)
                     try:
                         self.send_file(export, 'EzRead-backup.zip')
@@ -142,6 +148,10 @@ def handler_for(app: ApplicationContext):
                     generation = int(raw_generation) if raw_generation is not None and raw_generation.isdigit() else None
                     with app.LOCK, app.db() as con:
                         self.send_json(paper_ai.history(con, pid, generation))
+                elif re.fullmatch(r'/api/papers/[a-f0-9]{16}/selection-progress', path):
+                    query = urllib.parse.parse_qs(parts.query)
+                    data = {key: query.get(key, [None])[0] for key in ('client_id', 'request_id')}
+                    self.send_json(app.SELECTION_REQUESTS.snapshot(path.split('/')[-2], data))
                 elif re.fullmatch(r'/api/papers/[a-f0-9]{16}', path):
                     self.send_json({'paper': app.public_doc(app.get_doc(path.split('/')[-1]), full=True)})
                 elif path.startswith('/media/'):
@@ -184,6 +194,22 @@ def handler_for(app: ApplicationContext):
                 return
             try:
                 path = urllib.parse.urlparse(self.path).path
+                if path == '/api/shutdown':
+                    result = app.prepare_shutdown(self.read_json())
+                    self.send_json(result)
+                    threading.Thread(target=self.server.shutdown, daemon=True, name='ezread-shutdown').start()
+                    return
+                if app.SHUTDOWN.is_set():
+                    self.send_json({'error': '应用正在关闭，任务已停止。'}, 503)
+                    return
+                if path == '/api/desktop-attach':
+                    self.send_json(app.attach_desktop(self.server, self.read_json()))
+                    return
+                if path == '/api/selection-session':
+                    if self.read_json():
+                        raise ValueError('翻译对话准备不接受正文或其他参数。')
+                    self.send_json(app.SELECTION_SESSION.start(app), 202)
+                    return
                 if path == '/api/journal-catalogue/proposals':
                     self.send_json(journal_catalogue.start_proposal(app, self.read_json().get('instruction')), 202)
                     return
@@ -247,7 +273,7 @@ def handler_for(app: ApplicationContext):
                         import codex_models, codex_bridge
                         settings = app.settings()
                         config = codex_models.resolve_config(settings['selection_translation_model'], settings['selection_translation_reasoning_effort'])
-                        result = codex_bridge.translate_selection(selected, **config)
+                        result = codex_bridge.translate_selection(selected, **config, paper_id=pid)
                         self.send_json({'translation': result})
                     return
                 if path == '/api/import':
@@ -272,7 +298,10 @@ def handler_for(app: ApplicationContext):
                             errors.append({'filename': filename, 'error': str(exc)})
                     self.send_json({'papers': papers, 'errors': errors})
                     return
-                match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/(metadata-enrich|structure|translate|pause|summarize|team|cover|restore|translation-restore|translation-resume-draft)', path)
+                if re.fullmatch(r'/api/papers/[a-f0-9]{16}/team', path):
+                    self.send_json({'error': '作者与团队查询功能已取消。'}, 410)
+                    return
+                match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/(metadata-enrich|structure|translate|pause|summarize|cover|restore|translation-restore|translation-resume-draft)', path)
                 if not match:
                     self.send_json({'error': '接口不存在。'}, 404)
                     return
@@ -282,7 +311,7 @@ def handler_for(app: ApplicationContext):
                     app.enrich_publication(pid, data)
                 elif action == 'structure':
                     app.schedule_structure(pid)
-                elif action in ('translate', 'summarize', 'team'):
+                elif action in ('translate', 'summarize'):
                     state = app.codex_status()
                     if not state.get('authenticated'):
                         raise ValueError('请先通过 ChatGPT 账号登录本机 Codex。EzRead 不会使用 API 密钥。' + state.get('message', ''))
@@ -318,6 +347,9 @@ def handler_for(app: ApplicationContext):
         def do_PATCH(self):
             if not self.safe_origin():
                 self.send_json({'error': '拒绝跨站请求。'}, 403)
+                return
+            if app.SHUTDOWN.is_set():
+                self.send_json({'error': '应用正在关闭，任务已停止。'}, 503)
                 return
             try:
                 path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)

@@ -25,19 +25,25 @@ function modelPicker(initial = {}, options = {}) {
     effort.disabled = disabled || !entry;
   }
   function render() {
+    if (disposed) return;
     const entries = modelCatalog?.models || [];
     model.replaceChildren(el("option", { value: "" }, modelCatalog?.default_model_id ? `Codex 默认 · ${modelCatalog.default_model_id}` : "Codex 默认"), ...entries.map(entry => el("option", { value: entry.model }, entry.display_name || entry.model)));
     if (desiredModel && !entries.some(x => x.model === desiredModel)) model.append(el("option", { value: desiredModel, disabled: true }, `${desiredModel}（目录中暂不可用）`));
     model.value = desiredModel; model.disabled = disabled || !entries.length; updateEfforts();
-    message.textContent = modelCatalog?.error || (modelCatalog?.refreshing ? "正在刷新模型目录…" : modelCatalog?.status === "stale" ? "当前为缓存目录" : entries.length ? "" : "模型目录暂不可用，请刷新后重试。" );
+    message.textContent = modelCatalog?.error || (modelCatalog?.refreshing ? entries.length ? "已有目录可用，正在后台更新…" : "正在刷新模型目录…" : modelCatalog?.status === "stale" ? "当前为缓存目录" : entries.length ? "" : "模型目录暂不可用，请刷新后重试。" );
     message.classList.toggle("error-text", !entries.length && !modelCatalog?.refreshing);
+    // Settings refreshes call loadModels directly. Every catalog notification
+    // must schedule completion polling, even after the picker's initial load.
+    if (modelCatalog?.refreshing && timer === null) {
+      timer = setTimeout(() => { timer = null; if (!disposed && root.isConnected && modelCatalog?.refreshing) void update(); }, 1200);
+    } else if (!modelCatalog?.refreshing) { clearTimeout(timer); timer = null; }
   }
   model.addEventListener("change", () => { desiredModel = model.value; desiredEffort = ""; updateEfforts(); options.onChange?.({ model: desiredModel, reasoning_effort: desiredEffort }); });
   effort.addEventListener("change", () => { desiredEffort = effort.value; options.onChange?.({ model: desiredModel, reasoning_effort: desiredEffort }); });
   async function update(force = false) {
     if (disposed) return;
     refresh.disabled = true;
-    try { await loadModels(force); if (disposed) return; render(); if (modelCatalog?.refreshing) { clearTimeout(timer); timer = setTimeout(() => { if (root.isConnected) void update(); }, 1200); } }
+    try { await loadModels(force); if (disposed) return; render(); }
     catch (error) { message.textContent = `模型目录读取失败：${error.message}`; message.classList.add("error-text"); }
     finally { refresh.disabled = false; }
   }

@@ -44,7 +44,7 @@ def import_pdf(app: ApplicationContext, content, filename):
                'conference_track': metadata.get('conference_track', 'unknown'),
                'authors': metadata.get('authors', []), 'tags': [], 'collection': '', 'favorite': False,
                'created_at': app.now(), 'updated_at': app.now(), 'last_read': '', 'read_page': 1,
-               'notes': '', 'team': '', 'team_sources': [], 'deleted': False,
+               'notes': '', 'deleted': False,
                'translation': {'status': 'idle', 'error': ''}}
         if not doc.get('blocks'):
             doc['import_warning'] = '未提取到可选文字，可能是扫描件。可查看原文和选封面，暂不能全文翻译。'
