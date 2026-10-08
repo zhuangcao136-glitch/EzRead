@@ -29,7 +29,8 @@ function openMetadata(p) {
   const conferenceFields = el("section", { class: "inline-fields" }, field("会议全称", input("conference_name")), field("会议简称", input("conference_abbr", "text", { placeholder: "会议简称" })));
   function updateTypeFields() { conferenceFields.classList.toggle("hidden", typeSelect.value !== "conference"); }
   typeSelect.addEventListener("change", updateTypeFields); updateTypeFields();
-  const form = el("form", {}, el("div", { class: "dialog-heading" }, el("div", {}, el("h2", {}, "编辑论文信息")), iconButton("close", "关闭编辑", () => closeDialog("#edit-dialog"))), field("文献类型", typeSelect), field("中文标题", input("title_zh", "text", { placeholder: "中文标题" })), field("原文标题", input("title", "text", { required: true })), el("div", { class: "inline-fields" }, field("期刊 / 出版来源全称", input("journal")), field("来源简称", input("journal_abbr", "text", { placeholder: "来源简称" }))), el("div", { class: "inline-fields" }, field("发表年份", input("year", "number", { min: "1800", max: "2200" })), field("DOI", input("doi", "text", { placeholder: "DOI" }))), field("作者", authors), field("一句话简介", summary), conferenceFields, field("主题标签", tags));
+  const heading = el("div", { class: "dialog-heading metadata-heading" }, el("h2", { id: "metadata-dialog-title" }, "编辑论文信息"), iconButton("close", "关闭编辑", () => closeDialog("#edit-dialog")));
+  const form = el("form", { class: "metadata-scroll", "aria-labelledby": "metadata-dialog-title" }, field("文献类型", typeSelect), field("中文标题", input("title_zh", "text", { placeholder: "中文标题" })), field("原文标题", input("title", "text", { required: true })), el("div", { class: "inline-fields" }, field("期刊 / 出版来源全称", input("journal")), field("来源简称", input("journal_abbr", "text", { placeholder: "来源简称" }))), el("div", { class: "inline-fields" }, field("发表年份", input("year", "number", { min: "1800", max: "2200" })), field("DOI", input("doi", "text", { placeholder: "DOI" }))), field("作者", authors), field("一句话简介", summary), conferenceFields, field("主题标签", tags));
   const save = el("button", { type: "submit", class: "button primary" }, "保存信息");
   form.append(el("div", { class: "inline-fields" }, field("发表时间", input("publication_date", "text", { placeholder: "YYYY-MM-DD，可只填写年份" })), field("发表页码", input("page_range", "text", { placeholder: "例如 38402-38416" }))),
     el("div", { class: "inline-fields" }, field("卷", input("volume")), field("期", input("issue"))), field("文章编号（无传统页码时）", input("article_number")));
@@ -44,7 +45,7 @@ function openMetadata(p) {
     patch.tags = list(tags.value); patch.authors = authors.value.split("\n").map(x => x.trim()).filter(Boolean); patch.summary = summary.value.trim();
     await patchPaper(p.id, patch); closeDialog("#edit-dialog"); renderDetail(); toast("论文信息已保存");
   }, save); });
-  $("#edit-content").replaceChildren(form); openDialog("#edit-dialog");
+  $("#edit-content").replaceChildren(heading, form); openDialog("#edit-dialog");
 }
 
 function openCrop(figure) {

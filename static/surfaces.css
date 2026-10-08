@@ -1332,6 +1332,35 @@ body:has(#settings-dialog[open]) {
   padding: 10px 0;
 }
 
+/* The metadata heading stays outside the form's inset scrolling region. */
+#edit-dialog {
+  padding: 0.75rem;
+  overflow: hidden;
+  max-height: calc(100dvh - 40px);
+}
+#edit-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100dvh - 40px - 1.5rem - 2px);
+}
+#edit-dialog .metadata-heading {
+  flex: none;
+  align-items: center;
+  margin: 0;
+  padding: 0.65rem 0.9rem 1rem;
+}
+#edit-dialog .metadata-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.35rem 0.9rem 0.9rem;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  border-radius: 0 0 calc(var(--radius-dialog) - 0.75rem) calc(var(--radius-dialog) - 0.75rem);
+}
+
 /* The detail frame clips its inset scroller; overview and notes share the full body width. */
 #detail-dialog {
   padding: 12px;

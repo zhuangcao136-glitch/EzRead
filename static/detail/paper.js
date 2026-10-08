@@ -104,7 +104,6 @@ function renderDetail({ centerSelectedFigure = false } = {}) {
   if (publication.length) metadata.insertBefore(el("p", { class: "info-inline" }, publication.join(" · ")), publicationInfoAnchor);
   const publicationControl = publicationVerified(p) ? el("p", { class: "publication-verified", role: "status" }, icon("check"), "出版信息已核对") : button(publicationMissing(p).length ? "补全出版信息" : "核对出版信息", () => void openPublicationLookup(p), "secondary", "");
   metadata.insertBefore(el("div", { class: "detail-publication-actions", "aria-label": "出版信息与合集" }, publicationControl, detailCollectionPicker(p)), publicationInfoAnchor);
-  if (p.metadata_source) metadata.insertBefore(sourceList([{ title: "发表信息来源", url: p.metadata_source }]), publicationInfoAnchor);
   if (p.paper_type === "journal" && /^\d{4}\.\d{4,5}v\d+/i.test(p.filename || "")) metadata.insertBefore(el("p", { class: "info-inline" }, "当前原文为导入时的 arXiv 预印本；期刊和年份对应后续正式发表版本。"), publicationInfoAnchor);
   const overview = el("section", { class: "detail-overview", "aria-label": "研究速览" }, el("div", { class: "section-heading" }, el("h3", {}, "研究速览"), button(ACTIVE_STATUSES.has(p.summarize_status) ? "正在生成…" : "生成 / 更新速览", event => act(() => runPaperTask("summarize"), event.currentTarget), "secondary", "translate", { disabled: ACTIVE_STATUSES.has(p.summarize_status) })), p.summarize_status && !DONE_STATUSES.has(p.summarize_status) ? el("p", { class: "info-inline" }, `速览任务：${taskStatusName(p.summarize_status)}`) : null, p.summarize_error ? el("p", { class: "error-text" }, asText(p.summarize_error)) : null, ...[["一句话理解", p.summary], ["研究问题", p.problem], ["方法与装置", p.method], ["主要结果", p.results], ["局限与边界", p.limitations]].map(([label, value]) => el("section", { class: "insight" }, el("h4", {}, label), el("p", { class: value ? "" : "muted" }, asText(value) || "尚未生成"))));
   const notesArea = el("textarea", { class: "notes-area", placeholder: "论文笔记", "aria-label": "个人论文笔记", value: p.notes || "" });
@@ -122,9 +121,6 @@ function renderDetail({ centerSelectedFigure = false } = {}) {
     }
   }
   state.detailRenderedSignature = paperSignature(p);
-}
-function sourceList(sources) {
-  return el("ul", { class: "source-list" }, list(sources).map((source, i) => { const url = externalUrl(typeof source === "string" ? source : source?.url || source?.href); return url ? el("li", {}, el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, typeof source === "object" ? source.title || source.name || `来源 ${i + 1}` : `来源 ${i + 1} ↗`)) : null; }));
 }
 const detailNoteSaves = new Map();
 async function flushDetailNotes(id = null) {

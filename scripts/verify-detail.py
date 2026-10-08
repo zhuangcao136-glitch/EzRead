@@ -33,6 +33,7 @@ def main():
         doc = {'id': PID, 'hash': 'synthetic-detail-layout', 'title': 'An integrated tactile sensing system for soft robotic grasping, learning-based object recognition and force-controlled manipulation',
                'authors': ['Test Author', 'Second Author'], 'journal': 'The International Journal of Robotics Research', 'year': 2026, 'paper_type': 'journal',
                'doi': '10.1234/detail-fixture', 'publication_date': '2026-01-01', 'volume': '1', 'issue': '1', 'page_range': '1-20',
+               'metadata_source': 'https://example.org/publication/detail-fixture',
                'metadata_enrichment': {'status': 'declined', 'checked_at': '2026-01-02T00:00:00+00:00', 'missing': [], 'conflicts': [], 'error': ''},
                'deleted': False, 'pages': [{'number': number, 'image': 'page-001.png', 'width': 800, 'height': 440} for number in range(1, 12)],
                'figures': [{'id': index, 'path': 'page-001.png', 'page': index} for index in range(1, 5)],

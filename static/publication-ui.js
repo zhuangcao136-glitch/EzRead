@@ -54,7 +54,6 @@ function openPublicationLookup(p) {
         el("p", { id: "publication-dialog-description", class: "publication-description", role: "status", "aria-live": "polite" }, description),
         missing.length && !busy ? el("div", { class: "publication-missing", "aria-label": "未识别的出版信息" }, missing.map(item => el("span", {}, item.label))) : null,
         busy ? el("div", { class: "publication-search-progress", "aria-hidden": "true" }, el("span", { class: "spinner" })) : details,
-        review && current.metadata_source ? sourceList([{ title: "查看出版信息来源", url: current.metadata_source }]) : null,
         !result && !busy && !ok ? el("p", { class: "publication-privacy" }, "仅向 Crossref / arXiv 查询标题、作者或文献编号，不上传 PDF 全文。暂不搜索也可以继续阅读，之后可在论文信息中补全。") : null,
         el("div", { class: "form-actions publication-actions" }, cancel, ok ? null : search)
       ];
