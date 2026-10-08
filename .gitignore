@@ -33,6 +33,10 @@ __pycache__/
 *.png
 !static/*.png
 !assets/branding/*.png
+!docs/images/library.png
+!docs/images/reader.png
+!docs/images/journal-tiers.png
+!docs/images/translation-settings.png
 *.zip
 *.lnk
 *.bak
