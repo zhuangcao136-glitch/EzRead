@@ -1,5 +1,13 @@
 "use strict";
 
+// The native viewport clips the complete WebView, including modal top layers.
+// Its minimum width must agree with the fixed two-column library geometry.
+function ezreadDesktopViewportMetrics() {
+  const layout = paperLayoutMetrics();
+  return { gutter: Math.max(0, innerWidth - document.body.clientWidth),
+    minimumWidth: layout.minimumWidth, pixelRatio: devicePixelRatio };
+}
+
 // Invoked only by the native window's close handshake. Preserve local drafts
 // first; a network failure may leave a recoverable draft but must not discard it.
 async function ezreadPrepareDesktopClose() {

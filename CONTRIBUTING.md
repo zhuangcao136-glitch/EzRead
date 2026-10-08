@@ -8,19 +8,20 @@
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
-python scripts/check.py
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe scripts/check.py
 ```
+
+直接调用项目虚拟环境的 Python，无需执行激活脚本，避免 PowerShell 执行策略限制和误用未安装 Ruff 的其他 Python 环境。下文的 Python 命令也使用该解释器。
 
 运行测试使用独立临时库，检查入口把测试子进程的临时文件放在 `work/` 下的独立目录并在结束后清理，不修改用户的全局环境变量。手动启动开发实例也应明确指定文献目录与空闲端口，例如：
 
 ```powershell
 $env:EZREAD_DATA_DIR = Join-Path (Get-Location) 'work\dev-data'
-python server.py --port 47832
+.\.venv\Scripts\python.exe server.py --port 47832
 ```
 
-随后通过该端口的 `/api/health` 核实目录，并在浏览器手动打开 `http://127.0.0.1:47832`。个人真实文献库不要用作测试库。桌面启动器使用默认端口；需要原生窗口时先运行 `powershell -File scripts/build-desktop.ps1` 构建桌面组件，再为开发命令添加 `--open`。
+随后通过该端口的 `/api/health` 核实目录，并在浏览器手动打开 `http://127.0.0.1:47832`。个人真实文献库不要用作测试库。桌面启动器使用默认端口；需要原生窗口时先运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1` 构建桌面组件，再为开发命令添加 `--open`。
 
 ## 代码约定与检查
 
@@ -34,8 +35,8 @@ python server.py --port 47832
 统一检查入口：
 
 ```powershell
-python scripts/check.py --lint-only
-python scripts/check.py
+.\.venv\Scripts\python.exe scripts/check.py --lint-only
+.\.venv\Scripts\python.exe scripts/check.py
 ```
 
 第一条运行 Ruff 和源码发布边界审查；第二条继续运行 Python 离线回归、全部前端脚本语法检查与 Node 回归。缺少依赖时明确失败，不静默跳过。Node 不在 PATH 时设置 `EZREAD_NODE` 为其可执行文件路径。
@@ -61,7 +62,7 @@ python scripts/check.py
 - 只修改需求涉及的职责模块，入口仅做必要组装。
 - 保留导入去重、软删除、阅读锚点、草稿、手动合集归属及译文版本。
 - Bug 修复补充能覆盖故障的测试；简单样式或文档调整无需编写重复实现的测试。
-- 提交前运行与改动相称的验证；涉及接口和模块加载时运行 `python scripts/check.py`。
+- 提交前运行与改动相称的验证；涉及接口和模块加载时运行 `.\.venv\Scripts\python.exe scripts/check.py`。
 - PR 描述说明问题、最终行为、验证和实际限制。截图使用合成文献或已获授权的样本。
 - 检查 `git status` 和拟提交差异，排除文献、账号资料、本机绝对路径、缓存和备份。
 

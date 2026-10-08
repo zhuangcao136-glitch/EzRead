@@ -72,8 +72,7 @@ internal static class Program
                                 while (!form.IsDisposed) {
                                     if (!wake.WaitOne(500)) continue;
                                     if (form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke((Action)delegate {
-                                        if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
-                        form.Show(); if (options.SmokeReport == null) form.Activate();
+                                        form.ActivateExisting();
                                     });
                                 }
                             } catch (ObjectDisposedException) { } catch (InvalidOperationException) { }
@@ -209,10 +208,14 @@ internal sealed class ReaderWindow : Form
     [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr icon);
     private readonly ShellOptions options;
     private readonly WebView2 view = new WebView2();
+    private readonly Panel viewport = new Panel { AutoScroll = true, Dock = DockStyle.Fill };
     private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
     private readonly Icon captionIcon;
     private readonly System.Windows.Forms.Timer viewportTimer = new System.Windows.Forms.Timer { Interval = 100 };
     private const double LayoutWidth = 1920;
+    private Size? smokeMonitorSize;
+    private Rectangle fittedMonitorArea;
+    private double fittedDeviceScale;
     private bool fittingViewport;
     private bool ready, preparingClose, mayClose;
     private readonly OwnedBackend backend;
@@ -225,13 +228,15 @@ internal sealed class ReaderWindow : Form
         Icon = new Icon(Path.Combine(options.Root, "static", "ezread.ico"), 32, 32);
         captionIcon = new Icon(Path.Combine(options.Root, "static", "window-icon-transparent.ico"), 16, 16);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(1450, 920); MinimumSize = new Size(500, 360);
+        ClientSize = new Size(1450, 920);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(244, 247, 239);
         RestoreBoundsFromDisk();
-        view.Dock = DockStyle.Fill; view.DefaultBackgroundColor = BackColor;
-        Controls.Add(view);
-        view.SizeChanged += delegate { RequestViewportFit(); };
+        UpdateMinimumSize(MonitorArea());
+        view.Location = Point.Empty; view.DefaultBackgroundColor = BackColor;
+        viewport.Controls.Add(view); Controls.Add(viewport);
+        viewport.SizeChanged += delegate { RequestViewportFit(); };
+        LocationChanged += delegate { if (options.SmokeReport == null) RequestViewportFit(); };
         viewportTimer.Tick += async delegate { viewportTimer.Stop(); await FitViewport(); };
         if (options.SmokeReport != null) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
         Shown += async delegate { await InitializeWebView(); };
@@ -253,22 +258,66 @@ internal sealed class ReaderWindow : Form
         if (Icon != null) SendMessage(Handle, 0x80, new IntPtr(1), Icon.Handle);
     }
     protected override bool ShowWithoutActivation { get { return options.SmokeReport != null; } }
+    public void ActivateExisting() {
+        if (preparingClose || mayClose || IsDisposed || Disposing) return;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show(); if (options.SmokeReport == null) Activate();
+    }
     private void RequestViewportFit() {
-        if (!ready || options.Child || IsDisposed) return;
+        if (!ready || IsDisposed) return;
         viewportTimer.Stop(); viewportTimer.Start();
     }
+    private Rectangle MonitorArea() {
+        return smokeMonitorSize.HasValue ? new Rectangle(Point.Empty, smokeMonitorSize.Value) : Screen.FromControl(this).WorkingArea;
+    }
+    private void UpdateMinimumSize(Rectangle area) {
+        var minimum = new Size((area.Width + 1) / 2, (area.Height + 1) / 2);
+        if (MinimumSize != minimum) MinimumSize = minimum;
+    }
     private async Task FitViewport() {
-        if (!ready || options.Child || IsDisposed) return;
+        if (!ready || IsDisposed || WindowState == FormWindowState.Minimized) return;
         if (fittingViewport) { RequestViewportFit(); return; }
         fittingViewport = true;
         try {
-            // Page zoom normalizes the whole CSS viewport, so hit testing,
-            // fixed controls, popovers and drag coordinates share one scale.
-            string value = await view.CoreWebView2.ExecuteScriptAsync("document.body.clientWidth");
-            double width;
-            if (!Double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out width) || width <= 0 || Math.Abs(width - LayoutWidth) <= 1) return;
-            double zoom = Math.Max(.25, Math.Min(5, view.ZoomFactor * width / LayoutWidth));
-            if (Math.Abs(zoom - view.ZoomFactor) > .0001) view.ZoomFactor = zoom;
+            var area = MonitorArea(); UpdateMinimumSize(area);
+            var frame = SizeFromClientSize(Size.Empty);
+            // Reserve the native vertical scrollbar's lane even while hidden;
+            // showing it after a height-only resize must not move the cards.
+            int fullWidth = Math.Max(1, area.Width - frame.Width - SystemInformation.VerticalScrollBarWidth), fullHeight = Math.Max(1, area.Height - frame.Height);
+            if (options.Child) {
+                view.ZoomFactor = 1;
+                view.Size = new Size(Math.Max(1, viewport.Width - SystemInformation.VerticalScrollBarWidth), fullHeight);
+                return;
+            }
+            string value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify(ezreadDesktopViewportMetrics())");
+            var metrics = json.Deserialize<Dictionary<string, object>>(json.Deserialize<string>(value));
+            double gutter = Convert.ToDouble(metrics["gutter"]);
+            double deviceScale = Convert.ToDouble(metrics["pixelRatio"]) / view.ZoomFactor;
+            // Use the monitor's longer axis, so portrait screens keep readable
+            // cards and fewer columns. Window resize never determines page zoom.
+            if (area != fittedMonitorArea || Math.Abs(deviceScale - fittedDeviceScale) > .0001) {
+                // Calibrate once against the monitor, then lock this zoom for
+                // normal resizes. Temporary reference width also works on a
+                // portrait monitor and when startup restores a small window.
+                view.Size = new Size(Math.Max(fullWidth, fullHeight), fullHeight);
+                await Task.Delay(75);
+                for (int attempt = 0; attempt < 4; attempt++) {
+                    value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify(ezreadDesktopViewportMetrics())");
+                    metrics = json.Deserialize<Dictionary<string, object>>(json.Deserialize<string>(value));
+                    gutter = Convert.ToDouble(metrics["gutter"]);
+                    double target = Math.Max(.25, Math.Min(5, Math.Max(fullWidth, fullHeight) / deviceScale / (LayoutWidth + gutter)));
+                    if (Math.Abs(target - view.ZoomFactor) <= .0001) break;
+                    view.ZoomFactor = target;
+                    await Task.Delay(75);
+                }
+                fittedMonitorArea = area; fittedDeviceScale = deviceScale;
+            }
+            double zoom = view.ZoomFactor;
+            int minimumWidth = (int)Math.Ceiling((Convert.ToDouble(metrics["minimumWidth"]) + gutter) * deviceScale * zoom);
+            var size = new Size(Math.Max(viewport.Width - SystemInformation.VerticalScrollBarWidth, minimumWidth), fullHeight);
+            if (view.Size != size) view.Size = size;
+            // Native scrollbars pan the entire view, even while a modal dialog
+            // makes its document background inert. Keep positions on resize.
         } catch (Exception exc) { Log("viewport-fit: " + exc.GetType().Name); }
         finally { fittingViewport = false; }
     }
@@ -295,13 +344,14 @@ internal sealed class ReaderWindow : Form
             core.Settings.AreDevToolsEnabled = false;
             // No remote debugging port, host objects, or certificate overrides.
             await core.AddScriptToExecuteOnDocumentCreatedAsync(MigrationScript());
+            if (options.SmokeReport != null) await core.AddScriptToExecuteOnDocumentCreatedAsync("(()=>{window.__ezreadSmokeErrors=[];window.addEventListener('error',e=>window.__ezreadSmokeErrors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__ezreadSmokeErrors.push(String(e.reason)));document.addEventListener('DOMContentLoaded',()=>new MutationObserver(changes=>{for(const change of changes)for(const node of change.addedNodes)if(node.classList?.contains('error'))window.__ezreadSmokeErrors.push(node.textContent);}).observe(document.querySelector('#toasts'),{childList:true}),{once:true});})();");
             if (!options.Child) {
                 core.WebMessageReceived += delegate(object sender, CoreWebView2WebMessageReceivedEventArgs e) {
                     if (!options.IsLocal(e.Source)) return;
                     Uri source; if (!Uri.TryCreate(e.Source, UriKind.Absolute, out source) || (source.AbsolutePath != "/" && source.AbsolutePath != "/static/index.html")) return;
                     try { if (e.TryGetWebMessageAsString() == "ezread-fit-viewport") RequestViewportFit(); } catch (ArgumentException) { }
                 };
-                await core.AddScriptToExecuteOnDocumentCreatedAsync("(()=>{if(window.top!==window)return;const fit=()=>window.chrome?.webview?.postMessage('ezread-fit-viewport');window.addEventListener('resize',fit);document.addEventListener('DOMContentLoaded',()=>{new ResizeObserver(fit).observe(document.documentElement);fit();},{once:true});})();");
+                await core.AddScriptToExecuteOnDocumentCreatedAsync("(()=>{if(window.top!==window)return;const fit=()=>window.chrome?.webview?.postMessage('ezread-fit-viewport');window.addEventListener('resize',fit);document.addEventListener('DOMContentLoaded',()=>{let font=getComputedStyle(document.documentElement).fontSize;new MutationObserver(()=>{const next=getComputedStyle(document.documentElement).fontSize;if(next!==font){font=next;fit();}}).observe(document.documentElement,{attributes:true,attributeFilter:['style']});fit();},{once:true});})();");
                 view.ZoomFactorChanged += delegate { RequestViewportFit(); };
             }
             core.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e) {
@@ -331,7 +381,7 @@ internal sealed class ReaderWindow : Form
                 ready = e.IsSuccess;
                 if (!e.IsSuccess) { Log("navigation-failed: " + e.WebErrorStatus); return; }
                 Log("ready WebView2=" + environment.BrowserVersionString);
-                if (options.Child) view.ZoomFactor = 1; else await FitViewport();
+                await FitViewport();
                 if (options.SmokeReport != null) await SmokeTest(environment);
             };
             core.Navigate(options.Url);
@@ -364,11 +414,22 @@ internal sealed class ReaderWindow : Form
     }
     private async void OnClosing(object sender, FormClosingEventArgs e)
     {
-        if (mayClose) { SaveBounds(); return; }
+        if (mayClose) return;
+        // The main window has already saved before closing its PDF children.
+        var owner = Owner as ReaderWindow;
+        if (options.Child && e.CloseReason == CloseReason.FormOwnerClosing && owner != null && owner.mayClose) { mayClose = true; return; }
         e.Cancel = true;
         if (preparingClose) return;
         preparingClose = true;
+        var visibleWindows = new List<Form>();
+        if (Visible) visibleWindows.Add(this);
+        foreach (var child in OwnedForms) if (child.Visible) visibleWindows.Add(child);
         try {
+            SaveBounds();
+            // Keep the WebView alive for its save acknowledgement, but remove
+            // native windows immediately. Backend cleanup finishes while hidden.
+            Hide();
+            foreach (var child in visibleWindows) if (child != this) child.Hide();
             // ExecuteScriptAsync does not await JavaScript Promises. Use a small
             // explicit acknowledgement and poll it while the UI stays responsive.
             if (ready) {
@@ -380,15 +441,19 @@ internal sealed class ReaderWindow : Form
                 answer = await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult");
             }
             if (answer != "true") {
+                RestoreClosingWindows(visibleWindows);
                 MessageBox.Show(this, "仍有内容未能保存，窗口暂未关闭。请确认草稿已保存后重试。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             }
-            SaveBounds();
             if (backend != null) await Task.Run((Action)backend.Stop);
             mayClose = true; Close();
-        } catch (Exception exc) { Log("close-save: " + exc.GetType().Name); MessageBox.Show(this, "无法确认草稿保存状态，请稍后重试关闭。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        } catch (Exception exc) { mayClose = false; Log("close-save: " + exc.GetType().Name); RestoreClosingWindows(visibleWindows); MessageBox.Show(this, "无法完成关闭，窗口已恢复，请稍后重试。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         finally { preparingClose = false; }
+    }
+    private void RestoreClosingWindows(List<Form> windows) {
+        foreach (var window in windows) if (!window.IsDisposed && !window.Disposing) window.Show();
+        if (Visible && options.SmokeReport == null) Activate();
     }
     private void RestoreBoundsFromDisk() {
         if (options.Child) return;
@@ -397,7 +462,7 @@ internal sealed class ReaderWindow : Form
             if (!File.Exists(file)) return;
             var data = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
             var bounds = new Rectangle(Convert.ToInt32(data["left"]), Convert.ToInt32(data["top"]), Convert.ToInt32(data["width"]), Convert.ToInt32(data["height"]));
-            if (bounds.Width < 500 || bounds.Height < 360 || bounds.Width > 10000 || bounds.Height > 10000) return;
+            if (bounds.Width < 64 || bounds.Height < 64 || bounds.Width > 10000 || bounds.Height > 10000) return;
             foreach (var screen in Screen.AllScreens) if (Rectangle.Intersect(screen.WorkingArea, bounds).Width >= 100 && Rectangle.Intersect(screen.WorkingArea, bounds).Height >= 80) { StartPosition = FormStartPosition.Manual; Bounds = bounds; break; }
             if (data.ContainsKey("maximized") && Convert.ToBoolean(data["maximized"])) WindowState = FormWindowState.Maximized;
         } catch { }
@@ -411,23 +476,57 @@ internal sealed class ReaderWindow : Form
             if (File.Exists(file)) File.Replace(file + ".tmp", file, null); else File.Move(file + ".tmp", file);
         } catch (Exception exc) { Log("window-position: " + exc.GetType().Name); }
     }
+    private async Task SetSmokeViewport(Size monitor, Size client) {
+        smokeMonitorSize = monitor; UpdateMinimumSize(MonitorArea());
+        viewport.AutoScrollPosition = Point.Empty; ClientSize = client;
+        RequestViewportFit(); await Task.Delay(350); await FitViewport(); await Task.Delay(200);
+    }
+    private async Task<object> SmokeLayout(string label) {
+        string layout = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({viewport:document.body.clientWidth,height:innerHeight,tracks:getComputedStyle(document.querySelector('#paper-grid')).gridTemplateColumns.split(/\\s+/).map(parseFloat),grid:document.querySelector('#paper-grid').getBoundingClientRect().toJSON(),container:document.querySelector('#library-view').getBoundingClientRect().toJSON(),sidebar:document.querySelector('.sidebar').getBoundingClientRect().width,footer:document.querySelector('.library-footer').getBoundingClientRect().toJSON(),dialog:[...document.querySelectorAll('dialog[open]')].map(n=>({id:n.id,...n.getBoundingClientRect().toJSON()})),cards:[...document.querySelectorAll('.paper-card')].map(n=>({id:n.dataset.paperId,x:n.offsetLeft,y:n.offsetTop,width:n.offsetWidth,height:n.offsetHeight,title:n.querySelector('.card-title').textContent}))})");
+        using (var preview = new MemoryStream()) {
+            await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, preview);
+            preview.Position = 0;
+            using (var bitmap = new Bitmap(preview)) {
+                int left = Math.Max(0, -viewport.AutoScrollPosition.X), top = Math.Max(0, -viewport.AutoScrollPosition.Y);
+                var crop = new Rectangle(left, top, Math.Min(viewport.ClientSize.Width, bitmap.Width - left), Math.Min(viewport.ClientSize.Height, bitmap.Height - top));
+                using (var visible = bitmap.Clone(crop, bitmap.PixelFormat)) visible.Save(options.SmokeReport + "." + label + ".png", System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+        return new { label = label, clientWidth = viewport.ClientSize.Width, clientHeight = viewport.ClientSize.Height,
+            viewWidth = view.Width, viewHeight = view.Height, minimumWidth = MinimumSize.Width, minimumHeight = MinimumSize.Height,
+            scrollX = -viewport.AutoScrollPosition.X, scrollY = -viewport.AutoScrollPosition.Y,
+            zoomFactor = view.ZoomFactor, layout = json.DeserializeObject(json.Deserialize<string>(layout)) };
+    }
     private async Task SmokeTest(CoreWebView2Environment environment) {
         await Task.Delay(1600);
+        var frame = SizeFromClientSize(Size.Empty);
         var layouts = new List<object>();
         foreach (var size in new[] { new Size(1366, 768), new Size(1920, 1080), new Size(2560, 1440) }) {
-            ClientSize = size;
-            RequestViewportFit(); await Task.Delay(600); await FitViewport(); await Task.Delay(200);
-            string layout = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({viewport:document.body.clientWidth,height:innerHeight,tracks:getComputedStyle(document.querySelector('#paper-grid')).gridTemplateColumns.split(/\\s+/).map(parseFloat),sidebar:document.querySelector('.sidebar').getBoundingClientRect().width,cards:[...document.querySelectorAll('.paper-card')].map(n=>({id:n.dataset.paperId,x:n.offsetLeft,y:n.offsetTop,width:n.offsetWidth,height:n.offsetHeight,title:n.querySelector('.card-title').textContent}))})");
-            layouts.Add(new { clientWidth = view.ClientSize.Width, clientHeight = view.ClientSize.Height, zoomFactor = view.ZoomFactor, layout = json.DeserializeObject(json.Deserialize<string>(layout)) });
-            string capture = options.SmokeReport + "." + size.Width + ".png";
-            using (var stream = File.Create(capture)) await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
+            await SetSmokeViewport(size, new Size(size.Width - frame.Width, size.Height - frame.Height));
+            layouts.Add(await SmokeLayout(size.Width.ToString()));
         }
+        var viewportChecks = new List<object>();
+        var landscape = new Size(1920, 1080);
+        int landscapeHeight = landscape.Height - frame.Height;
+        await SetSmokeViewport(landscape, new Size(landscape.Width - frame.Width, landscapeHeight)); viewportChecks.Add(await SmokeLayout("normal-five"));
+        foreach (var width in new[] { 1600, 1280, 1000 }) {
+            await SetSmokeViewport(landscape, new Size(width, landscapeHeight)); viewportChecks.Add(await SmokeLayout("normal-" + width));
+        }
+        await SetSmokeViewport(landscape, new Size(1280, 540)); viewportChecks.Add(await SmokeLayout("flat"));
+        viewport.AutoScrollPosition = new Point(0, 10000); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("flat-scrolled"));
+        var portrait = new Size(1080, 1920);
+        await SetSmokeViewport(portrait, new Size(portrait.Width - frame.Width, portrait.Height - frame.Height)); viewportChecks.Add(await SmokeLayout("portrait"));
+        await SetSmokeViewport(portrait, new Size(1, 1)); viewportChecks.Add(await SmokeLayout("portrait-minimum"));
+        await view.CoreWebView2.ExecuteScriptAsync("openSettings()"); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("clipped-settings"));
+        viewport.AutoScrollPosition = new Point(10000, 10000); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("clipped-settings-scrolled"));
+        await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('#settings-dialog').close()");
+        await SetSmokeViewport(new Size(2560, 1440), new Size(2560 - frame.Width, 1440 - frame.Height));
         double beforeSettingsZoom = view.ZoomFactor;
         await view.CoreWebView2.ExecuteScriptAsync("window.__settingsProbe=null;(async()=>{const snap=()=>({width:document.body.clientWidth,scroll:scrollY,cards:[...document.querySelectorAll('.paper-card')].map(n=>[n.offsetLeft,n.offsetTop,n.offsetWidth,n.offsetHeight])});scrollTo(0,180);await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const before=snap();await openSettings();await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const frames=[];document.querySelector('#settings-tab-journals').click();for(let i=0;i<45;i++){await new Promise(requestAnimationFrame);frames.push(snap());}document.querySelector('#settings-tab-appearance').click();for(let i=0;i<30;i++){await new Promise(requestAnimationFrame);frames.push(snap());}document.querySelector('#settings-dialog').close();for(let i=0;i<15;i++){await new Promise(requestAnimationFrame);frames.push(snap());}window.__settingsProbe={before,frames};})();");
         string settingsProbe = "null";
         for (int i = 0; i < 80 && settingsProbe == "null"; i++) { await Task.Delay(50); settingsProbe = await view.CoreWebView2.ExecuteScriptAsync("window.__settingsProbe ? JSON.stringify(window.__settingsProbe) : null"); }
         var settingsBackground = new { beforeZoom = beforeSettingsZoom, afterZoom = view.ZoomFactor, before = settingsProbe == "null" ? null : ((Dictionary<string, object>)json.DeserializeObject(json.Deserialize<string>(settingsProbe)))["before"], frames = settingsProbe == "null" ? null : ((Dictionary<string, object>)json.DeserializeObject(json.Deserialize<string>(settingsProbe)))["frames"] };
-        string state = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({title:document.title,cards:document.querySelectorAll('.paper-card').length,desktop:window.ezreadDesktop===true,closeHook:typeof ezreadPrepareDesktopClose==='function',stored:localStorage.getItem('ezread-sort'),body:!!document.querySelector('.app-shell'),draftPresent:localStorage.getItem('ezread-reader-notes:smoke-paper')!==null})");
+        string state = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({title:document.title,cards:document.querySelectorAll('.paper-card').length,desktop:window.ezreadDesktop===true,closeHook:typeof ezreadPrepareDesktopClose==='function',stored:localStorage.getItem('ezread-sort'),body:!!document.querySelector('.app-shell'),draftPresent:localStorage.getItem('ezread-reader-notes:smoke-paper')!==null,errors:window.__ezreadSmokeErrors})");
         IntPtr big = SendMessage(Handle, 0x7f, new IntPtr(1), IntPtr.Zero);
         bool iconMatches = false;
         IntPtr expectedHandle = LoadImage(IntPtr.Zero, Path.Combine(options.Root, "static", "ezread.ico"), 1, 32, 32, 0x10);
@@ -437,7 +536,7 @@ internal sealed class ReaderWindow : Form
                 for (int y = 0; iconMatches && y < actual.Height; y++) for (int x = 0; x < actual.Width; x++) if (actual.GetPixel(x, y) != expected.GetPixel(x, y)) { iconMatches = false; break; }
             }
         } finally { if (expectedHandle != IntPtr.Zero) DestroyIcon(expectedHandle); }
-        var report = new { processId = Process.GetCurrentProcess().Id, browserProcessId = view.CoreWebView2.BrowserProcessId, webViewVersion = environment.BrowserVersionString, hostExecutable = Application.ExecutablePath, windowTitle = Text, bigIconPresent = big != IntPtr.Zero, bigIconOwned = big == Icon.Handle, bigIconMatchesBook = iconMatches, captionIconOwned = SendMessage(Handle, 0x7f, IntPtr.Zero, IntPtr.Zero) == captionIcon.Handle, page = json.DeserializeObject(json.Deserialize<string>(state)), layouts = layouts, settingsBackground = settingsBackground };
+        var report = new { processId = Process.GetCurrentProcess().Id, browserProcessId = view.CoreWebView2.BrowserProcessId, webViewVersion = environment.BrowserVersionString, hostExecutable = Application.ExecutablePath, windowTitle = Text, bigIconPresent = big != IntPtr.Zero, bigIconOwned = big == Icon.Handle, bigIconMatchesBook = iconMatches, captionIconOwned = SendMessage(Handle, 0x7f, IntPtr.Zero, IntPtr.Zero) == captionIcon.Handle, page = json.DeserializeObject(json.Deserialize<string>(state)), layouts = layouts, viewportChecks = viewportChecks, settingsBackground = settingsBackground };
         File.WriteAllText(options.SmokeReport, json.Serialize(report), Encoding.UTF8);
         Close();
     }

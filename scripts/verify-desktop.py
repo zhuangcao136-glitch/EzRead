@@ -27,7 +27,9 @@ class Handler(SimpleHTTPRequestHandler):
         if name.startswith('/api/'):
             paper = {'id': 'smoke-paper', 'title': 'WebView2 verification paper', 'authors': 'Test Author', 'journal': 'Test Journal', 'year': 2026, 'paper_type': 'journal', 'figures': [], 'blocks': [], 'pages': [], 'translation': {'status': 'idle'}}
             papers = [dict(paper, id='smoke-paper' if i == 0 else f'smoke-paper-{i}', title=f'Uniform scaling verification paper {i + 1}: methods and results') for i in range(self.paper_count)]
-            value = {'/api/papers': {'papers': papers, 'collections': []}, '/api/settings': {'theme': 'sage'}, '/api/models': {'models': []}, '/api/status': {'codex': {'available': False, 'authenticated': False}, 'queue': []}, '/api/usage': {'status': 'unavailable', 'buckets': []}}.get(name, {})
+            catalogue = {'rows': [{'issn': '1234-5678', 'name': 'Test Journal', 'aliases': '', 'tier': 'other'}],
+                         'counts': {'top': 0, 'important': 0, 'other': 1}, 'revision': 'fixture-catalogue', 'error': ''}
+            value = {'/api/papers': {'papers': papers, 'collections': []}, '/api/settings': {'theme': 'sage'}, '/api/journal-catalogue': catalogue, '/api/models': {'models': []}, '/api/status': {'codex': {'available': False, 'authenticated': False}, 'queue': []}, '/api/usage': {'status': 'unavailable', 'buckets': []}}.get(name, {})
             content = json.dumps(value).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -68,7 +70,7 @@ def main():
                     duplicate = subprocess.run(command, cwd=ROOT, creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
                     assert duplicate.returncode == 0, 'Duplicate startup should activate the existing native window.'
                 try:
-                    code = process.wait(timeout=35)
+                    code = process.wait(timeout=70)
                 except subprocess.TimeoutExpired:
                     # Only the child created here against this temporary library.
                     process.terminate(); process.wait(timeout=5)
@@ -97,6 +99,32 @@ def main():
                         assert card['id'] == original['id'] and card['title'] == original['title'], item
                         if not options.background_stability: assert all(abs(card[key] - original[key]) <= 1 for key in ('x', 'y', 'width', 'height')), item
                 assert layouts[0]['zoomFactor'] < layouts[1]['zoomFactor'] < layouts[2]['zoomFactor'], value
+                checks = {item['label']: item for item in value['viewportChecks']}
+                normal = checks['normal-five']
+                for label, columns in [('normal-five', 5), ('normal-1600', 4), ('normal-1280', 3), ('normal-1000', 2)]:
+                    item = checks[label]
+                    assert len(item['layout']['tracks']) == columns, item
+                    assert item['zoomFactor'] == normal['zoomFactor'], item
+                    assert item['viewHeight'] == normal['viewHeight'], item
+                    assert (item['minimumWidth'], item['minimumHeight']) == (960, 540), item
+                    for card, original in zip(item['layout']['cards'], normal['layout']['cards']):
+                        assert card['id'] == original['id'] and all(abs(card[key] - original[key]) <= 1 for key in ('width', 'height')), item
+                    grid, container = item['layout']['grid'], item['layout']['container']
+                    assert abs((grid['left'] - container['left']) - (container['right'] - grid['right'])) <= 1, item
+                flat = checks['flat']
+                assert flat['viewHeight'] > flat['clientHeight'], flat
+                assert flat['layout'] == checks['normal-1280']['layout'], flat
+                assert checks['flat-scrolled']['scrollY'] > 0, checks['flat-scrolled']
+                portrait = checks['portrait']
+                assert len(portrait['layout']['tracks']) == 2, portrait
+                minimum = checks['portrait-minimum']
+                assert (minimum['minimumWidth'], minimum['minimumHeight']) == (540, 960), minimum
+                assert minimum['viewWidth'] > minimum['clientWidth'] and minimum['viewHeight'] > minimum['clientHeight'], minimum
+                assert len(minimum['layout']['tracks']) == 2, minimum
+                assert all(card['width'] == portrait['layout']['cards'][i]['width'] for i, card in enumerate(minimum['layout']['cards'])), minimum
+                settings, panned = checks['clipped-settings'], checks['clipped-settings-scrolled']
+                assert settings['layout']['dialog'] and panned['scrollX'] > 0 and panned['scrollY'] > 0, panned
+                assert settings['layout']['dialog'] == panned['layout']['dialog'], panned
                 if options.background_stability:
                     frames = value['settingsBackground']['frames']
                     before = value['settingsBackground']['before']
@@ -109,12 +137,15 @@ def main():
                 output.mkdir(exist_ok=True)
                 for width in (1366, 1920, 2560):
                     (output / f'ezread-native-five-columns-{width}.png').write_bytes(Path(f'{report}.{width}.png').read_bytes())
+                for label in checks:
+                    (output / f'ezread-native-viewport-{label}.png').write_bytes(Path(f'{report}.{label}.png').read_bytes())
                 assert value['page']['stored'] == 'year' and value['page']['draftPresent'], value
+                assert not value['page']['errors'], value['page']
                 assert (data / 'desktop-window.json').exists(), 'Close handshake did not save native window state.'
                 reports.append(value)
                 marker.write_text('{"ezread-sort":"recent"}', encoding='utf-8')
             (ROOT / 'work' / 'webview2-native-smoke.json').write_text(json.dumps({'cycles': reports, 'duplicateLaunch': 'passed', 'realModelCalls': 0, 'realLibraryWrites': 0, 'nativeTaskbarPhotographed': False}, ensure_ascii=False, indent=2), encoding='utf-8')
-            print(json.dumps({'cycles': len(reports), 'nativeWindow': True, 'engine': reports[0]['webViewVersion'], 'bookIconMatches': True, 'draftAndSortPersistAfterReopen': True, 'duplicateLaunch': 'passed', 'fiveColumns': True, 'uniformScaleAtWidths': [1366, 1920, 2560], 'realModelCalls': 0}))
+            print(json.dumps({'cycles': len(reports), 'nativeWindow': True, 'engine': reports[0]['webViewVersion'], 'bookIconMatches': True, 'draftAndSortPersistAfterReopen': True, 'duplicateLaunch': 'passed', 'fixedSizeColumns': [5, 4, 3, 2], 'portraitColumns': 2, 'verticalCropAndModalPanning': True, 'minimumWindowArea': 'one quarter of monitor working area', 'uniformScaleAtWidths': [1366, 1920, 2560], 'realModelCalls': 0}))
             # WebView2's browser child can briefly retain profile file handles.
             time.sleep(1)
     finally:

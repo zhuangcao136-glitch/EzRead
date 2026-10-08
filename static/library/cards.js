@@ -20,6 +20,19 @@ function renderLibrary() {
   else grid.replaceChildren();
   renderLegend(); renderBulkbar(papers);
 }
+function paperLayoutMetrics(grid = $("#paper-grid")) {
+  const container = grid.parentElement, containerStyle = getComputedStyle(container);
+  const sidebar = $(".sidebar"), gap = Number.parseFloat(getComputedStyle(grid).columnGap) || 0;
+  const padding = (Number.parseFloat(containerStyle.paddingLeft) || 0) + (Number.parseFloat(containerStyle.paddingRight) || 0);
+  const sidebarWidth = sidebar.getBoundingClientRect().width;
+  // Match the existing five-column desktop at its reference body width.
+  const cardWidth = (1920 - sidebarWidth - padding - 4 * gap) / 5;
+  return { cardWidth, gap, available: container.clientWidth - padding,
+    minimumWidth: sidebarWidth + padding + 2 * cardWidth + gap };
+}
+function paperColumnCount(available, cardWidth, gap) {
+  return Math.max(2, Math.min(5, Math.floor((available + gap + 0.5) / (cardWidth + gap))));
+}
 function renderMasonry(grid, papers) {
   const cards = papers.map(renderCard);
   grid.classList.add("masonry");
@@ -28,13 +41,13 @@ function renderMasonry(grid, papers) {
   const layout = () => {
     scheduled = false;
     if (!grid.isConnected || !grid.classList.contains("masonry") || grid.firstElementChild !== cards[0]) return;
-    const style = getComputedStyle(grid);
-    // CSS resolves the available width into equal tracks, including on resize.
-    const tracks = style.gridTemplateColumns.split(/\s+/).map(Number.parseFloat).filter(Number.isFinite);
-    if (!tracks.length || !grid.clientWidth) return;
-    const width = tracks[0], gap = Number.parseFloat(style.columnGap) || 0;
-    const heights = Array(tracks.length).fill(0);
-    // Set every width before measuring heights so wrapped text packs correctly.
+    const metrics = paperLayoutMetrics(grid), width = metrics.cardWidth, gap = metrics.gap;
+    if (metrics.available <= 0 || width <= 0) return;
+    const count = paperColumnCount(metrics.available, width, gap);
+    grid.style.gridTemplateColumns = `repeat(${count}, ${width}px)`;
+    grid.style.width = `${count * width + (count - 1) * gap}px`;
+    const heights = Array(count).fill(0);
+    // Resize rearranges fixed-size cards without changing text or image geometry.
     cards.forEach(card => { card.style.width = `${width}px`; });
     for (const card of cards) {
       const column = heights.indexOf(Math.min(...heights));
@@ -49,6 +62,7 @@ function renderMasonry(grid, papers) {
   if (window.ResizeObserver) {
     paperLayoutObserver = new ResizeObserver(schedule);
     paperLayoutObserver.observe(grid);
+    paperLayoutObserver.observe(grid.parentElement);
     cards.forEach(card => paperLayoutObserver.observe(card));
   } else {
     cards.forEach(card => card.querySelector("img")?.addEventListener("load", schedule));

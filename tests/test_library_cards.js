@@ -83,51 +83,64 @@ const heights = [500, 250, 400, 450, 350, 300, 200, 300];
 const cards = heights.map((height, index) => ({ id: index, offsetHeight: height, style: {}, querySelector: () => null }));
 const frames = [];
 let observeCallback;
-let trackWidths = Array(6).fill(265);
+const container = { clientWidth: 1736 };
 const observed = [];
 const grid = {
-  isConnected: true, clientWidth: 1670, firstElementChild: null, style: {},
+  isConnected: true, parentElement: container, firstElementChild: null, style: {},
   classList: { values: new Set(), add(value) { this.values.add(value); }, contains(value) { return this.values.has(value); } },
   replaceChildren(...nodes) { this.firstElementChild = nodes[0]; this.children = nodes; }
 };
 const layoutContext = {
   renderCard: paper => cards[paper],
-  getComputedStyle: () => ({ gridTemplateColumns: trackWidths.map(width => `${width}px`).join(" "), columnGap: "16px" }),
+  getComputedStyle: node => node === grid ? { columnGap: "16px" } : { paddingLeft: "20px", paddingRight: "20px" },
+  $: () => ({ getBoundingClientRect: () => ({ width: 184 }) }),
   requestAnimationFrame: callback => { frames.push(callback); },
   window: { ResizeObserver: true },
   ResizeObserver: class { constructor(callback) { observeCallback = callback; } observe(node) { observed.push(node); } disconnect() {} }
 };
 vm.createContext(layoutContext);
-vm.runInContext("let paperLayoutObserver = null;" + section("function renderMasonry(", "function renderCard(") + "globalThis.renderMasonry = renderMasonry;", layoutContext);
+vm.runInContext("let paperLayoutObserver = null;" + section("function paperLayoutMetrics(", "function renderCard(") + "globalThis.renderMasonry = renderMasonry; globalThis.paperColumnCount = paperColumnCount;", layoutContext);
 layoutContext.renderMasonry(grid, cards.map((_, index) => index));
 frames.shift()();
-assert.deepEqual(cards.slice(0, 6).map(card => card.style.top), Array(6).fill("0px"));
-assert.deepEqual(cards.slice(0, 6).map(card => card.style.left), ["0px", "281px", "562px", "843px", "1124px", "1405px"]);
-assert.equal(cards[6].style.left, "281px");
-assert.equal(cards[6].style.top, "266px");
-assert.equal(cards[7].style.left, "1405px");
-assert.equal(cards[7].style.top, "316px");
-assert.equal(grid.style.height, "616px");
-assert.ok(observed.includes(grid), "The available width must be observed, even if card heights stay unchanged");
-assert.ok(cards.every(card => card.style.width === "265px"));
+assert.deepEqual(cards.slice(0, 5).map(card => card.style.top), Array(5).fill("0px"));
+const originalWidths = cards.map(card => card.style.width);
+assert.equal(cards[5].style.left, cards[1].style.left);
+assert.equal(cards[5].style.top, "266px");
+assert.equal(grid.style.height, "716px");
+assert.ok(observed.includes(container), "Parent width must be observed even when the fixed-width grid does not change");
+assert.ok(cards.every(card => card.style.width === "326.4px"));
 
-// Resize the same grid: every card must remain inside its available width.
-trackWidths = Array(3).fill(320); grid.clientWidth = 992;
+// Column transitions never change card width or the space between cards.
+container.clientWidth = 1500;
 observeCallback(); frames.shift()();
-assert.deepEqual(cards.slice(0, 3).map(card => card.style.left), ["0px", "336px", "672px"]);
-assert.equal(cards[3].style.left, "336px");
+assert.equal(new Set(cards.map(card => card.style.left)).size, 4);
+assert.deepEqual(cards.map(card => card.style.width), originalWidths);
+
+container.clientWidth = 1200;
+observeCallback(); frames.shift()();
+assert.equal(new Set(cards.map(card => card.style.left)).size, 3);
+assert.equal(cards[3].style.left, cards[1].style.left);
 assert.equal(cards[3].style.top, "266px");
-assert.ok(cards.every(card => parseFloat(card.style.left) + parseFloat(card.style.width) <= grid.clientWidth));
+assert.ok(cards.every(card => parseFloat(card.style.left) + parseFloat(card.style.width) <= container.clientWidth - 40));
+assert.deepEqual(cards.map(card => card.style.width), originalWidths);
 
-trackWidths = [240]; grid.clientWidth = 240;
-observeCallback(); frames.shift()();
-assert.ok(cards.every(card => card.style.left === "0px" && card.style.width === "240px"));
-assert.equal(cards[1].style.top, "516px");
+for (const available of [850, 320]) {
+  container.clientWidth = available;
+  observeCallback(); frames.shift()();
+  assert.equal(new Set(cards.map(card => card.style.left)).size, 2);
+  assert.deepEqual(cards.map(card => card.style.width), originalWidths);
+}
+assert.ok(parseFloat(grid.style.width) > container.clientWidth, "Below two columns the layout overflows instead of shrinking");
+for (let count = 3; count <= 5; count++) {
+  const threshold = count * 326.4 + (count - 1) * 16;
+  assert.equal(layoutContext.paperColumnCount(threshold, 326.4, 16), count);
+  assert.equal(layoutContext.paperColumnCount(threshold - 1, 326.4, 16), count - 1);
+}
 
-trackWidths = Array(6).fill(265); grid.clientWidth = 1670;
+container.clientWidth = 1736;
 
 cards[0].offsetHeight = 100;
 observeCallback(); frames.shift()();
-assert.equal(cards[6].style.left, "0px");
-assert.equal(cards[6].style.top, "116px");
-console.log("library cards: English titles, status, model, filters, sorting, abbreviations, and responsive masonry passed");
+assert.equal(cards[5].style.left, "0px");
+assert.equal(cards[5].style.top, "116px");
+console.log("library cards: English titles, status, model, filters, sorting, fixed card size, 5/4/3/2 columns and clipping passed");
