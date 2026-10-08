@@ -6,6 +6,7 @@ tools here; only the text explicitly supplied by EzRead is sent to the model.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import subprocess
@@ -15,6 +16,7 @@ import time
 from pathlib import Path
 
 import codex_bridge
+from ezread.overview import overview_text
 
 _locks = {}
 _locks_guard = threading.Lock()
@@ -126,7 +128,7 @@ def switch_model(con, pid, config, doc, library):
     findings = [{'answer': m['text'][:1000], 'citations': m['citations']}
                 for m in old_messages if m['role']=='assistant' and m['kind']=='answer' and m['citations']][-12:]
     handoff = {'paper_title': doc.get('title',''), 'user_notes': doc.get('notes','')[:10000],
-               'summary': doc.get('summary','')[:5000], 'verified_in_paper': findings,
+               'summary': overview_text(doc)[:5000], 'verified_in_paper': findings,
                'terminology': [], 'unresolved_questions': [m['text'][:500] for m in old_messages
                     if m['role']=='user'][-3:] if not findings else [],
                'translation_status': doc.get('translation',{}).get('status','idle'),
@@ -224,12 +226,19 @@ class CodexSession:
                 raise SessionError(str(mapped),mapped.code)
             return response.get('result',{})
 
-    def turn(self,thread_id,prompt,config,schema,cancel_event=None):
+    def turn(self,thread_id,prompt,config,schema,cancel_event=None,on_progress=None):
         started=self.rpc('turn/start',{'threadId':thread_id,
             'input':[{'type':'text','text':prompt,'text_elements':[]}],
             'model':config['model'],'effort':config['reasoning_effort'],
-            'outputSchema':schema})
+            'outputSchema':schema, **({'summary':'auto'} if on_progress else {})})
         turn_id=started.get('turn',{}).get('id')
+        summaries={}
+        messages={}
+        last_ping=time.monotonic()
+        def emit(kind, **values):
+            if on_progress:
+                on_progress({'type':kind, **values})
+        emit('status', stage='waiting', label='等待 Codex 响应')
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise SessionError('任务已暂停，已完成内容已保留。','cancelled')
@@ -239,20 +248,49 @@ class CodexSession:
             try:
                 event=self.events.get(timeout=min(.25,remaining))
             except queue.Empty:
+                if time.monotonic()-last_ping >= 2:
+                    emit('ping')
+                    last_ping=time.monotonic()
                 continue
             if event is None:
                 raise SessionError('Codex 会话意外结束；已完成内容已保留。')
             payload=event.get('params',{})
             if payload.get('threadId')!=thread_id:
                 continue
+            method=event.get('method')
+            if method!='turn/completed' and turn_id and payload.get('turnId')!=turn_id:
+                continue
             if event.get('method')=='error':
                 if turn_id and payload.get('turnId')!=turn_id:
                     continue
                 if payload.get('willRetry'):
+                    emit('status', stage='reconnecting', label='Codex 正在重新连接')
                     continue
                 raw=payload.get('error',{}).get('message','')
                 mapped=codex_bridge._classify_error(raw)
                 raise SessionError(str(mapped),mapped.code)
+            item=payload.get('item',{})
+            item_id=payload.get('itemId') or item.get('id','')
+            if method in ('item/started','item/completed') and item.get('type')=='reasoning':
+                emit('status', stage='reasoning', label='正在思考')
+                for index,part in enumerate(item.get('summary',[])):
+                    summaries[(item_id,index)]=part if isinstance(part,str) else part.get('text','')
+                if summaries:
+                    emit('reasoning', text='\n\n'.join(summaries.values()))
+            elif method=='item/reasoning/summaryTextDelta':
+                key=(item_id,payload.get('summaryIndex',0))
+                summaries[key]=summaries.get(key,'')+payload.get('delta','')
+                emit('reasoning', text='\n\n'.join(summaries.values()))
+            elif method=='item/agentMessage/delta':
+                messages[item_id]=messages.get(item_id,'')+payload.get('delta','')
+                preview=answer_preview(messages[item_id])
+                if preview:
+                    emit('answer', text=preview)
+            elif method=='item/completed' and item.get('type')=='agentMessage':
+                messages[item_id]=item.get('text','')
+                preview=answer_preview(messages[item_id])
+                if preview:
+                    emit('answer', text=preview)
             if event.get('method')!='turn/completed':
                 continue
             turn=payload.get('turn',{})
@@ -264,12 +302,13 @@ class CodexSession:
                     mapped=codex_bridge._classify_error(raw)
                     raise SessionError(str(mapped),mapped.code)
                 raise SessionError('Codex 未完成本次回答；请稍后重试。')
-            messages=[item.get('text','') for item in turn.get('items',[])
+            completed=[item.get('text','') for item in turn.get('items',[])
                       if item.get('type')=='agentMessage' and item.get('text')]
-            if not messages:
+            completed=completed or list(messages.values())
+            if not completed:
                 raise SessionError('Codex 未返回可用回答。')
             try:
-                return json.loads(messages[-1])
+                return json.loads(completed[-1])
             except ValueError as exc:
                 raise SessionError('Codex 返回格式不完整；请重试。') from exc
 
@@ -313,6 +352,55 @@ ANSWER_SCHEMA={'type':'object','additionalProperties':False,
  'required':['answer','citations']}
 
 
+def answer_preview(raw):
+    """Decode only the answer string from incomplete structured output, never JSON syntax."""
+    match=re.match(r'^\s*\{\s*(?:"citations"\s*:\s*\[[^\]]*\]\s*,\s*)?"answer"\s*:\s*"',raw)
+    if not match:
+        return ''
+    text=raw[match.end():]
+    result=[]
+    index=0
+    escapes={'n':'\n','r':'\r','t':'\t','b':'\b','f':'\f','"':'"','\\':'\\','/':'/'}
+    while index<len(text):
+        char=text[index]
+        if char=='"': break
+        if char!='\\':
+            result.append(char); index+=1; continue
+        if index+1>=len(text): break
+        code=text[index+1]
+        if code=='u':
+            if index+6>len(text): break
+            try: point=int(text[index+2:index+6],16)
+            except ValueError: break
+            if 0xD800<=point<=0xDBFF:
+                if index+12>len(text) or text[index+6:index+8]!='\\u': break
+                try: low=int(text[index+8:index+12],16)
+                except ValueError: break
+                if not 0xDC00<=low<=0xDFFF: break
+                result.append(chr(0x10000+((point-0xD800)<<10)+(low-0xDC00)))
+                index+=12
+            elif 0xDC00<=point<=0xDFFF: break
+            else:
+                result.append(chr(point)); index+=6
+        elif code in escapes:
+            result.append(escapes[code]); index+=2
+        else: break
+    return ''.join(result)
+
+
+def open_in_codex(thread_id):
+    """Dispatch only a saved, valid thread through the OS protocol handler."""
+    if not isinstance(thread_id,str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',thread_id):
+        raise ValueError('这版对话没有可打开的 Codex 会话，请先发送问题。')
+    if os.name!='nt':
+        raise ValueError('此入口需要 Windows 版 Codex 桌面应用。')
+    try:
+        os.startfile(f'codex://threads/{thread_id}')
+    except OSError as exc:
+        raise ValueError('无法打开 Codex，请确认桌面应用已安装且能响应 codex 链接。') from exc
+    return {'ok':True}
+
+
 def _evidence(doc,question):
     blocks=[b for b in doc.get('blocks',[]) if b.get('text','').strip()]
     if not blocks:
@@ -339,10 +427,12 @@ def _evidence(doc,question):
     return picked
 
 
-def ask(con_factory,pid,doc,question):
+def ask(con_factory,pid,doc,question,*,on_progress=None,cancel_event=None):
     if not isinstance(question,str) or not 1<=len(question.strip())<=4000:
         raise ValueError('请输入 1–4000 字的问题。')
     with paper_lock(pid):
+        progress=lambda kind, **values: on_progress({'type':kind,**values}) if on_progress else None
+        progress('status',stage='preparing',label='正在检索论文证据')
         with con_factory() as con:
             value=current(con,pid)
             config=lock_model(con,pid)
@@ -356,12 +446,20 @@ def ask(con_factory,pid,doc,question):
                 'handoff':json.loads(value['handoff']),
                 'recent_local_history':[{'role':m['role'],'text':m['text']} for m in recent],
                 'blocks':evidence},ensure_ascii=False)+'\n用户问题：'+question.strip())
+        reasoning={}
+        def forward(event):
+            if event.get('type')=='reasoning': reasoning['text']=event.get('text','')
+            if on_progress: on_progress(event)
+        progress('status',stage='connecting',label='正在连接 Codex')
         with CodexSession() as session:
             thread_id=_start_or_resume(session,value['main_thread_id'],config,BASE,value['handoff'])
             with con_factory() as con:
                 con.execute('UPDATE paper_ai_generations SET main_thread_id=? WHERE paper_id=? AND generation=?',
                             (thread_id,pid,value['generation']))
-            result=session.turn(thread_id,prompt,config,ANSWER_SCHEMA)
+            progress('thread',thread_id=thread_id,generation=value['generation'])
+            result=session.turn(thread_id,prompt,config,ANSWER_SCHEMA,
+                                on_progress=forward if on_progress else None,cancel_event=cancel_event)
+        progress('status',stage='validating',label='正在核对回答与论文引用')
         answer=result.get('answer')
         raw=result.get('citations')
         if not isinstance(answer,str) or not answer.strip() or not isinstance(raw,list):
@@ -375,6 +473,8 @@ def ask(con_factory,pid,doc,question):
         cited=[{'block_id':bid,'page':pages[bid]} for bid in citations]
         with con_factory() as con:
             add_message(con,pid,value['generation'],'user','question',question.strip())
+            if reasoning.get('text','').strip():
+                add_message(con,pid,value['generation'],'assistant','reasoning',reasoning['text'].strip())
             add_message(con,pid,value['generation'],'assistant','answer',answer.strip(),cited)
         return {'answer':answer.strip(),'citations':cited,'thread_id':thread_id}
 

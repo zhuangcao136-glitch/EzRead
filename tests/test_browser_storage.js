@@ -58,6 +58,16 @@ storage = fixture({ "ezread-sort-direction": "asc" });
 assert.equal(context.readBrowserSetting("direction", storage), "asc");
 assert.equal(context.writeBrowserSetting("sort", "invalid", storage), false);
 assert.equal(storage.entries.get("ezread-sort-direction"), "asc");
+storage = fixture({ "ezread-paper-chat-width": "616" });
+assert.equal(context.readBrowserSetting("chatWidth", storage), "616");
+assert.equal(context.writeBrowserSetting("chatWidth", "720.5", storage), true);
+assert.equal(context.readBrowserSetting("chatWidth", storage), "720.5");
+for (const width of ["", "NaN", "Infinity", "-100", "0", "99999", "616px"]) {
+  assert.equal(context.writeBrowserSetting("chatWidth", width, storage), false);
+}
+storage.failWrite = true;
+assert.equal(context.writeBrowserSetting("chatWidth", "800", storage), false);
+assert.equal(context.readBrowserSetting("chatWidth", storage), "720.5");
 context.document = { documentElement: { dataset: {}, style: { setProperty() {} } }, hidden: false, querySelectorAll: () => [] };
 for (const file of ["state.js", "preferences.js"]) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../static/core", file), "utf8"), context);

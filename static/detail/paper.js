@@ -5,6 +5,17 @@ async function openDetail(id) {
   renderDetail(); openDialog("#detail-dialog");
   if (!samePaper) $("#detail-scroll").scrollTop = 0;
 }
+function detailOverviewContent(p) {
+  const lead = asText(p.summary).trim();
+  const generated = Array.isArray(p.overview_sections) ? p.overview_sections.filter(section =>
+    section && typeof section.title === "string" && section.title.trim() && typeof section.content === "string" && section.content.trim()) : [];
+  const sections = generated.length ? generated : [["研究问题", p.problem], ["方法与装置", p.method], ["主要结果", p.results], ["局限与边界", p.limitations]]
+    .filter(([, value]) => asText(value).trim()).map(([title, content]) => ({ title, content }));
+  if (!lead && !sections.length) return [el("p", { class: "overview-empty muted" }, ACTIVE_STATUSES.has(p.summarize_status)
+    ? "AI 正在阅读论文并组织速览…" : "生成后，AI 将根据论文内容组织要点和分节。")];
+  return [lead ? el("p", { class: "overview-intro" }, lead) : null, ...sections.map(section =>
+    el("section", { class: "insight" }, el("h4", {}, section.title.trim()), el("p", {}, asText(section.content).trim())))];
+}
 function detailFigure() {
   const figures = state.detail?.figures || [];
   return state.detailFigure === null ? null : figures.find(f => String(f.id) === String(state.detailFigure));
@@ -105,7 +116,12 @@ function renderDetail({ centerSelectedFigure = false } = {}) {
   const publicationControl = publicationVerified(p) ? el("p", { class: "publication-verified", role: "status" }, icon("check"), "出版信息已核对") : button(publicationMissing(p).length ? "补全出版信息" : "核对出版信息", () => void openPublicationLookup(p), "secondary", "");
   metadata.insertBefore(el("div", { class: "detail-publication-actions", "aria-label": "出版信息与合集" }, publicationControl, detailCollectionPicker(p)), publicationInfoAnchor);
   if (p.paper_type === "journal" && /^\d{4}\.\d{4,5}v\d+/i.test(p.filename || "")) metadata.insertBefore(el("p", { class: "info-inline" }, "当前原文为导入时的 arXiv 预印本；期刊和年份对应后续正式发表版本。"), publicationInfoAnchor);
-  const overview = el("section", { class: "detail-overview", "aria-label": "研究速览" }, el("div", { class: "section-heading" }, el("h3", {}, "研究速览"), button(ACTIVE_STATUSES.has(p.summarize_status) ? "正在生成…" : "生成 / 更新速览", event => act(() => runPaperTask("summarize"), event.currentTarget), "secondary", "translate", { disabled: ACTIVE_STATUSES.has(p.summarize_status) })), p.summarize_status && !DONE_STATUSES.has(p.summarize_status) ? el("p", { class: "info-inline" }, `速览任务：${taskStatusName(p.summarize_status)}`) : null, p.summarize_error ? el("p", { class: "error-text" }, asText(p.summarize_error)) : null, ...[["一句话理解", p.summary], ["研究问题", p.problem], ["方法与装置", p.method], ["主要结果", p.results], ["局限与边界", p.limitations]].map(([label, value]) => el("section", { class: "insight" }, el("h4", {}, label), el("p", { class: value ? "" : "muted" }, asText(value) || "尚未生成"))));
+  const overview = el("section", { class: "detail-overview", "aria-label": "研究速览" },
+    el("div", { class: "section-heading" }, el("h3", {}, "研究速览"),
+      button(summarizeRunning ? "正在生成…" : "生成 / 更新速览", event => act(() => runPaperTask("summarize"), event.currentTarget), "secondary", "translate", { disabled: summarizeRunning })),
+    p.summarize_status && !DONE_STATUSES.has(p.summarize_status) ? el("p", { class: "info-inline" }, `速览任务：${taskStatusName(p.summarize_status)}`) : null,
+    p.summarize_error ? el("p", { class: "error-text" }, asText(p.summarize_error)) : null,
+    ...detailOverviewContent(p));
   const notesArea = el("textarea", { class: "notes-area", placeholder: "论文笔记", "aria-label": "个人论文笔记", value: p.notes || "" });
   const noteHint = el("div", { class: "save-hint", role: "status" }); bindAutosave(notesArea, p.id, noteHint);
   const notes = el("section", { class: "detail-notes", "aria-label": "我的研究笔记" }, el("div", { class: "section-heading" }, el("h3", {}, "我的研究笔记"), icon("edit")), notesArea, noteHint);

@@ -50,8 +50,9 @@ class FileActionTests(unittest.TestCase):
         headers = {'Content-Type': 'application/json'}
         if origin:
             headers['Origin'] = origin
+        # Origin is rejected before reading the body; avoid a Windows TCP reset.
         request = urllib.request.Request(f'http://127.0.0.1:{self.httpd.server_port}/api/papers/{self.pid}/{action}',
-                                         data=json.dumps(payload or {}).encode(), headers=headers, method='POST')
+                                         data=b'' if origin else json.dumps(payload or {}).encode(), headers=headers, method='POST')
         with urllib.request.urlopen(request, timeout=3) as response:
             return json.load(response)
 

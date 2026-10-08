@@ -37,7 +37,7 @@ def import_pdf(app: ApplicationContext, content, filename):
         metadata = paper_metadata.normalize_publication(metadata)
         doc = {**extracted, **metadata, 'id': pid, 'hash': fingerprint, 'filename': Path(filename).name,
                'title': metadata.get('title') or Path(filename).stem,
-               'title_zh': '', 'summary': '', 'problem': '', 'method': '', 'results': '', 'limitations': '',
+               'title_zh': '', 'summary': '', 'overview_sections': [],
                'journal': metadata.get('journal', ''), 'journal_abbr': app.journal_abbr(metadata.get('journal', '')),
                'paper_type': metadata.get('paper_type') or ('journal' if metadata.get('journal') else 'other'),
                'conference_name': metadata.get('conference_name', ''), 'conference_abbr': metadata.get('conference_abbr', ''),

@@ -334,25 +334,35 @@ def translate_selection(text: str, *, model: str, reasoning_effort: str,
 
 def summarize_paper(text: str, *, cancel_event=None, timeout: float = 420,
                     model: str | None = None, reasoning_effort: str = 'low') -> dict:
-    fields = ["title_zh", "summary", "problem", "method", "results", "limitations"]
+    from ezread.overview import validate_overview
+    fields = ["title_zh", "summary"]
     schema = {"type": "object", "additionalProperties": False,
               "properties": {**{name: {"type": "string"} for name in fields},
-                             "tags": {"type": "array", "items": {"type": "string"}}},
-              "required": fields + ["tags"]}
+                             "tags": {"type": "array", "items": {"type": "string"}},
+                             "overview_sections": {"type": "array", "items": {
+                                 "type": "object", "additionalProperties": False,
+                                 "properties": {"title": {"type": "string"}, "content": {"type": "string"}},
+                                 "required": ["title", "content"]}}},
+              "required": fields + ["tags", "overview_sections"]}
     instruction = """Produce a grounded Chinese reading card from the supplied paper text only.
 title_zh: faithfully translated paper title. summary: one sentence identifying the concrete contribution.
-problem/method/results/limitations: concise paragraphs describing the evidence and conditions in the paper.
+overview_sections: organize the overview into meaningful sections specific to this paper.
+Choose the Chinese section titles, number, order and emphasis from the supplied content and paper type.
+Do not follow a predefined outline or reuse the same headings for every paper. A review, a theory paper,
+a device study and an empirical study may need different structures. Omit unsupported or empty sections.
+Each section has a short, informative title and content in concise plain-text paragraphs; do not repeat
+the title in the content. Explain the contribution and supporting evidence without duplicating the summary.
 Distinguish real experiments from simulation, observations from causal claims, and measured results from claims.
 For results include the key metric with units and sample size ONLY if present in the supplied text.
-For limitations state reported limits and clearly mark any inference as '阅读提示'; do not invent defects.
-If a field cannot be established, explicitly say the supplied text does not establish it.
+State reported evidence boundaries where relevant and mark any inference as '阅读提示'; do not invent defects.
+If the supplied text is incomplete, explain the material evidence gaps without inventing missing results.
 tags: 3-6 short Chinese research-topic tags useful for finding a remembered device or approach.
 Do not invent author/team information, impact factors, quartiles, dates, citations, or outside knowledge.
 """
     result = _run_json(instruction, {"paper_text": text}, schema,
                        cancel_event=cancel_event, timeout=timeout,
                        model=model, reasoning_effort=reasoning_effort)
-    if any(not isinstance(result.get(key), str) for key in fields) or not isinstance(result.get("tags"), list):
-        raise TranslationError("论文简介格式不完整，请重试。", code="invalid_response")
-    result["tags"] = [tag.strip() for tag in result["tags"] if isinstance(tag, str) and tag.strip()][:8]
-    return result
+    try:
+        return validate_overview(result)
+    except ValueError as exc:
+        raise TranslationError(str(exc), code="invalid_response") from exc

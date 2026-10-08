@@ -73,8 +73,10 @@ class MetricRetirementTests(unittest.TestCase):
                         payload = json.load(response)
                     self.assertEqual(len(payload['papers']), 1)
                     self.assertTrue(jobs.empty())
+                    # This retired route responds before reading a request body.
+                    # An unread body can reset the connection on Windows.
                     req = urllib.request.Request(url + '/api/papers/0123456789abcdef/metrics',
-                                                 data=b'{}', method='POST',
+                                                 data=b'', method='POST',
                                                  headers={'Content-Type': 'application/json'})
                     with patch.object(server, 'PORT', httpd.server_port), \
                          self.assertRaises(urllib.error.HTTPError) as error:

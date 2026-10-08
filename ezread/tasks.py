@@ -1,6 +1,7 @@
 """Task queue, cancellation, quota pause and local Codex status cache."""
 from __future__ import annotations
 from .context import ApplicationContext
+from .overview import overview_text
 import sys
 import threading
 import time
@@ -95,11 +96,13 @@ def worker(app: ApplicationContext):
                     ai = paper_ai.current(con, pid)
                 result = codex_bridge.summarize_paper(text, cancel_event=event,
                     model=ai['model'], reasoning_effort=ai['reasoning_effort'])
-                allowed = ('title_zh', 'summary', 'problem', 'method', 'results', 'limitations', 'tags')
+                if event.is_set():
+                    raise codex_bridge.TranslationError('速览生成已取消，保留原有内容。', code='cancelled')
+                allowed = ('title_zh', 'summary', 'overview_sections', 'tags')
                 app.update_doc(pid, lambda d: d.update(**{k: result[k] for k in allowed if k in result}, summarize_status='completed'))
                 with app.db() as con:
                     paper_ai.add_message(con,pid,ai['generation'],'assistant','summary',
-                        '\n'.join(f'{name}：{result.get(name, "")}' for name in ('summary','problem','method','results','limitations')))
+                        overview_text(result))
         except Exception as exc:
             message = str(exc)[:1800]
             limited = getattr(exc, 'code', '') == 'quota'

@@ -34,15 +34,27 @@
 
 目前采用源码运行方式，主要面向 Windows。准备好可使用 Codex 的账号，并在本机安装、登录 Codex。桌面端入口可参考 [OpenAI 官方说明](https://learn.chatgpt.com/docs/app)。
 
-1. 点击[下载源码 ZIP](https://github.com/zhuangcao136-glitch/EzRead/archive/refs/heads/main.zip)，或在仓库首页选择 **Code → Download ZIP**。
-2. 将 ZIP 解压到希望长期存放软件的位置，例如 `D:\Apps\EzRead`。打开 Codex，新建项目，选择那个文件夹。
-3. 在该项目中新建对话，复制并发送下面这段话：
+按需求选择获取源码的方式：
+
+- **希望跟进后续更新**：推荐使用 Git 克隆，保留版本历史，方便以后拉取作者更新。先安装 Git，再在 PowerShell 中进入希望存放软件的目录，运行：
+
+  ```powershell
+  git clone https://github.com/zhuangcao136-glitch/EzRead.git
+  ```
+
+  后续更新前先导出备份、退出 EzRead，在克隆得到的 `EzRead` 文件夹中运行 `git pull --ff-only`，再让 Codex 检查依赖并重新构建桌面组件。克隆不会自动更新；如果已经修改源码，先让 Codex 检查并保存修改，再处理更新与可能的冲突。
+- **主要想自己 vibe coding，修改或新增功能**：可以直接[下载源码 ZIP](https://github.com/zhuangcao136-glitch/EzRead/archive/refs/heads/main.zip)，或在仓库首页选择 **Code → Download ZIP**，解压后交给 Codex 修改。ZIP 是一次源码快照，不包含 Git 版本历史，不能直接通过 `git pull` 获取后续更新。克隆同样支持个人定制；如果还想持续合并作者更新，建议选择克隆。
+
+**PowerShell 网络提示**：如果当前网络访问 GitHub 需要代理，克隆和拉取更新前需为 Git 配置可用代理；浏览器能访问 GitHub 不代表 Git 已使用代理。可以让 Codex 检查并配置 Git 代理，地址和端口以本机代理软件为准；能直接连接时无需配置。
+
+1. 将源码放到希望长期存放软件的位置，例如 `D:\Apps\EzRead`；ZIP 需要先解压。打开 Codex，新建项目，选择包含 `AGENTS.md` 和 `README.md` 的源码文件夹。
+2. 在该项目中新建对话，复制并发送下面这段话：
 
 ```text
 请阅读当前文件夹中的 AGENTS.md 和 README.md，将 EzRead 适配到本电脑，检查并配置运行所需依赖，构建桌面组件，检查官方 Codex CLI 是否可用及其 ChatGPT 登录状态；需要我登录时告诉我。完成后创建桌面快捷方式，启动软件并验证窗口能够正常打开。不要导入真实论文或发起全文翻译、论文问答来测试安装。
 ```
 
-4. 按 Codex 的提示完成必要的安装与账号登录。配置完成后，通过桌面 **EzRead** 快捷方式打开软件。
+3. 按 Codex 的提示完成必要的安装与账号登录。配置完成后，通过桌面 **EzRead** 快捷方式打开软件。
 
 运行依赖包括 Python 3.10+、`requirements.txt` 中的包、.NET Framework 4.8 与 WebView2 Runtime；AI 功能另需已登录的官方 Codex CLI。Codex 可协助配置，但安装结果仍取决于本机环境与网络。
 

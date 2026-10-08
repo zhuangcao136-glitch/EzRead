@@ -133,6 +133,57 @@ class PaperAITests(unittest.TestCase):
             {'model':'model-a','reasoning_effort':'medium'},paper_ai.ANSWER_SCHEMA)
         self.assertEqual(answer['citations'],['p1-b1'])
 
+    def test_stream_uses_only_matching_turn_and_readable_reasoning_summary(self):
+        session=RealCodexSession.__new__(RealCodexSession)
+        session.deadline=time.monotonic()+1
+        session.events=queue.Queue()
+        session.rpc=lambda *_: {'turn':{'id':'turn-a'}}
+        raw=json.dumps({'answer':'**结论**\n接触力为 10 N。','citations':['p1-b1']},ensure_ascii=False)
+        def put(method, **params):
+            session.events.put({'method':method,'params':{'threadId':'thread-a','turnId':'turn-a',**params}})
+        put('item/reasoning/summaryTextDelta',itemId='reason',summaryIndex=0,delta='检查实验段落。')
+        put('item/reasoning/textDelta',itemId='reason',delta='raw reasoning must not be exposed')
+        put('item/reasoning/summaryTextDelta',turnId='another-turn',delta='wrong turn')
+        put('item/agentMessage/delta',itemId='answer',delta=raw[:16])
+        put('item/agentMessage/delta',itemId='answer',delta=raw[16:])
+        put('turn/completed',turn={'id':'turn-a','status':'completed','items':[{'type':'agentMessage','text':raw}]})
+        events=[]
+        answer=session.turn('thread-a','question',{'model':'model-a','reasoning_effort':'medium'},
+                            paper_ai.ANSWER_SCHEMA,on_progress=events.append)
+        self.assertEqual(answer['answer'],'**结论**\n接触力为 10 N。')
+        self.assertEqual([e['text'] for e in events if e['type']=='reasoning'],['检查实验段落。'])
+        self.assertEqual([e['text'] for e in events if e['type']=='answer'][-1],answer['answer'])
+        self.assertNotIn('raw reasoning',str(events))
+
+    def test_partial_answer_decodes_escapes_and_split_surrogate_without_json(self):
+        self.assertEqual(paper_ai.answer_preview('{"answer":"第一行\\n第二行\\u4e2d\\u6587\\uD83D'), '第一行\n第二行中文')
+        self.assertEqual(paper_ai.answer_preview('{"citations":[],"answer":"quote \\" and \\uD83D\\uDE00"}'), 'quote " and 😀')
+        self.assertEqual(paper_ai.answer_preview('{"citations":["p1-b1"'), '')
+
+    def test_readable_reasoning_is_saved_with_answer_and_reopens_in_history(self):
+        original=FakeSession.turn
+        def streamed(self,thread_id,prompt,config,schema,**kwargs):
+            kwargs['on_progress']({'type':'reasoning','text':'对照实验与所引段落。'})
+            return original(self,thread_id,prompt,config,schema)
+        events=[]
+        with patch.object(FakeSession,'turn',streamed):
+            paper_ai.ask(self.db,PID,self.doc,'What was measured?',on_progress=events.append)
+        with self.db() as con:
+            saved=paper_ai.history(con,PID)['messages']
+        self.assertEqual([m['kind'] for m in saved],['question','reasoning','answer'])
+        self.assertEqual(saved[1]['text'],'对照实验与所引段落。')
+        self.assertTrue(any(e['type']=='thread' for e in events))
+
+    def test_item_completed_can_supply_answer_when_turn_items_are_empty(self):
+        session=RealCodexSession.__new__(RealCodexSession)
+        session.deadline=time.monotonic()+1
+        session.events=queue.Queue()
+        session.rpc=lambda *_: {'turn':{'id':'turn-a'}}
+        for method,values in [('item/completed',{'item':{'type':'agentMessage','id':'a','text':'{"answer":"结论","citations":[]}'}}),
+                             ('turn/completed',{'turn':{'id':'turn-a','status':'completed','items':[]}})]:
+            session.events.put({'method':method,'params':{'threadId':'thread-a','turnId':'turn-a',**values}})
+        self.assertEqual(session.turn('thread-a','q',{'model':'model-a','reasoning_effort':'medium'},paper_ai.ANSWER_SCHEMA)['answer'],'结论')
+
     def test_app_server_error_notification_is_reported(self):
         session=RealCodexSession.__new__(RealCodexSession)
         session.deadline=time.monotonic()+1

@@ -39,7 +39,7 @@
   .notes-area,
   .model-picker select,
   .reader-paper-chat > select,
-  .paper-chat-compose textarea,
+  .paper-chat-compose,
   .sort-row,
   .reader-mode-switch
 ) {
@@ -157,7 +157,7 @@
     .notes-area,
     .model-picker select,
     .reader-paper-chat > select,
-    .paper-chat-compose textarea,
+    .paper-chat-compose,
     .sort-row,
     .sort-row button,
     .reader-mode-switch,
@@ -1532,6 +1532,13 @@ body:has(#settings-dialog[open]) {
 }
 #detail-dialog .insight p {
   line-height: 1.9;
+}
+#detail-dialog .overview-intro,
+#detail-dialog .overview-empty {
+  margin: 0;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 #detail-dialog .detail-notes {
   gap: 1rem;

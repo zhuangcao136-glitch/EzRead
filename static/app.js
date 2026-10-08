@@ -6,7 +6,7 @@ function prepareSelectionSession() {
   return selectionPreparation;
 }
 function paperSignature(p) {
-  const t = translationOf(p); return JSON.stringify([p.updated_at, p.text_actions_revision, t.status, t.done, t.total, t.error, p.summarize_status, p.summary, p.structure_status, p.structure_error, p.collection, p.collection_assignment, p.journal_tier, p.tier_needs_review, p.paper_type, p.conference_name, p.conference_abbr]);
+  const t = translationOf(p); return JSON.stringify([p.updated_at, p.text_actions_revision, t.status, t.done, t.total, t.error, p.summarize_status, p.summary, p.overview_sections, p.structure_status, p.structure_error, p.collection, p.collection_assignment, p.journal_tier, p.tier_needs_review, p.paper_type, p.conference_name, p.conference_abbr]);
 }
 async function poll() {
   if (state.pollBusy || state.importing || document.hidden) return;

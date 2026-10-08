@@ -5,6 +5,7 @@ const BROWSER_SETTINGS = Object.freeze({
   } },
   sort: { key: "ezread-sort", previous: ["readx-sort", "tudu-sort"], valid: value => ["recent", "imported", "year"].includes(value) },
   direction: { key: "ezread-sort-direction", previous: [], valid: value => ["asc", "desc"].includes(value) },
+  chatWidth: { key: "ezread-paper-chat-width", previous: [], valid: value => typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value) && Number(value) >= 160 && Number(value) <= 3000 },
 });
 
 function removePreviousBrowserSettings(storage, spec) {

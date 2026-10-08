@@ -61,6 +61,41 @@ def handler_for(app: ApplicationContext):
                 raise ValueError('无效的请求。')
             return value
 
+        def stream_paper_chat(self, pid, doc, data):
+            import paper_ai
+            question=data.get('question','')
+            if not isinstance(question,str) or not 1<=len(question.strip())<=4000:
+                raise ValueError('请输入 1–4000 字的问题。')
+            # Reject a duplicate immediately, before sending streaming headers.
+            lock=paper_ai.paper_lock(pid)
+            if not lock.acquire(blocking=False):
+                self.send_json({'error':'这篇论文正在回答，请等待本轮完成。'},409)
+                return
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type','application/x-ndjson; charset=utf-8')
+                self.send_header('Cache-Control','no-store')
+                self.send_header('X-Content-Type-Options','nosniff')
+                self.send_header('Connection','close')
+                self.end_headers()
+                self.close_connection=True
+                connected=True
+                def emit(event):
+                    nonlocal connected
+                    if not connected: return
+                    try:
+                        self.wfile.write((json.dumps(event,ensure_ascii=False)+'\n').encode('utf-8'))
+                        self.wfile.flush()
+                    except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+                        connected=False
+                try:
+                    result=paper_ai.ask(app.db,pid,doc,question,on_progress=emit,cancel_event=app.SHUTDOWN)
+                    emit({'type':'completed',**result})
+                except Exception as exc:
+                    emit({'type':'error','error':str(exc),'code':getattr(exc,'code','session')})
+            finally:
+                lock.release()
+
         def send_file(self, path, attachment=None):
             import mimetypes
             if not path.is_file():
@@ -240,7 +275,7 @@ def handler_for(app: ApplicationContext):
                     self.read_json()
                     self.send_json(app.paper_file_action(*file_match.groups()))
                     return
-                ai_match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/ai/(chat|model|highlight)', path)
+                ai_match = re.fullmatch(r'/api/papers/([a-f0-9]{16})/ai/(chat|chat-stream|open|model|highlight)', path)
                 if ai_match:
                     import paper_ai
                     pid, action = ai_match.groups()
@@ -254,11 +289,20 @@ def handler_for(app: ApplicationContext):
                         with paper_ai.paper_lock(pid), app.LOCK, app.db() as con:
                             result = paper_ai.switch_model(con,pid,data,doc,app.LIBRARY)
                         self.send_json({'paper_ai': result})
-                    elif action == 'chat':
+                    elif action == 'open':
+                        if set(data)-{'generation'}:
+                            raise ValueError('打开对话的请求包含未知字段。')
+                        with app.LOCK, app.db() as con:
+                            saved=paper_ai.history(con,pid,data.get('generation'))
+                        self.send_json(paper_ai.open_in_codex(saved['thread_id']))
+                    elif action in ('chat','chat-stream'):
                         if not app.codex_status().get('authenticated'):
                             raise ValueError('请先在官方 Codex 中登录 ChatGPT 账号。')
-                        result = paper_ai.ask(app.db,pid,doc,data.get('question',''))
-                        self.send_json(result)
+                        if action=='chat-stream':
+                            self.stream_paper_chat(pid,doc,data)
+                        else:
+                            result = paper_ai.ask(app.db,pid,doc,data.get('question',''))
+                            self.send_json(result)
                     else:
                         import paper_structure
                         block_id, selected = data.get('block_id'), data.get('text')
