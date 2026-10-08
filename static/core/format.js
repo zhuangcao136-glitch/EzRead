@@ -33,7 +33,6 @@ function journalOf(p) {
 function dateMs(value) { return value ? new Date(typeof value === "number" && value < 1e12 ? value * 1000 : value).getTime() || 0 : 0; }
 function importedAt(p) { return dateMs(p.created_at || p.imported_at); }
 function safeUrl(url) { if (typeof url !== "string" || !url.trim()) return ""; try { const parsed = new URL(url, location.href); return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : ""; } catch { return ""; } }
-function externalUrl(url) { return typeof url === "string" && /^https?:\/\//i.test(url.trim()) ? safeUrl(url) : ""; }
 function imageNode(src, attrs = {}) { const url = safeUrl(src); return url ? el("img", { src: url, loading: "lazy", alt: "论文插图", ...attrs }) : placeholderImage(); }
 function placeholderImage() { return el("div", { class: "paper-no-image" }, icon("image"), "等待选择封面"); }
 function ratio(p) { const t = translationOf(p); return Math.max(0, Math.min(100, Number(t.total) ? Number(t.done || 0) / Number(t.total) * 100 : 0)); }

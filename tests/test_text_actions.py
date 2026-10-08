@@ -266,7 +266,8 @@ class TextActionTests(unittest.TestCase):
             def request(value, origin=None):
                 headers = {'Content-Type': 'application/json'}
                 if origin: headers['Origin'] = origin
-                return urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(value).encode(), headers=headers), timeout=3)
+                # Origin rejection does not read the body; avoid a Windows TCP reset.
+                return urllib.request.urlopen(urllib.request.Request(url, data=b'' if origin else json.dumps(value).encode(), headers=headers), timeout=3)
             try:
                 with request(payload) as response: self.assertEqual(len(json.load(response)['paper']['text_annotations']), 1)
                 with self.assertRaises(urllib.error.HTTPError) as error: request(payload, 'https://untrusted.example')

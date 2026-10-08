@@ -59,14 +59,6 @@
   --danger-border: #75443d;
   color-scheme: dark;
 }
-.rank-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin: 0.5rem 0 0.6rem;
-  position: relative;
-  z-index: 1;
-}
 .rank-badge {
   display: inline-block;
   border: 1px solid color-mix(in srgb, var(--badge-color, var(--muted)) 55%, var(--line));

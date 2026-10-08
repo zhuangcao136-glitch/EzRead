@@ -406,12 +406,8 @@
   cursor: text;
   transition: background-color 0.12s;
 }
-.reader-dialog .translation-block:hover,
-.reader-dialog .translation-block.selected {
+.reader-dialog .translation-block:hover {
   background: var(--green-soft);
-}
-.reader-dialog .translation-block.selected {
-  border-color: var(--line);
 }
 .reader-dialog .translated-text {
   font-family: var(--system-font, sans-serif);
@@ -439,11 +435,6 @@
   font-family: var(--system-font, sans-serif);
   font-size: var(--reader-font-size, 18px);
   color: var(--text);
-}
-.reader-dialog .translation-block.highlighted .translated-text {
-  background: #f9f0d2;
-  color: #202b25;
-  border-radius: 3px;
 }
 .reader-dialog .block-label {
   font-size: 0.73em;

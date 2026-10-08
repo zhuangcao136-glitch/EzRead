@@ -65,7 +65,7 @@
   .theme-swatch:before,
   .theme-swatch:after,
   .block-overlay,
-  .translation-block.highlighted .translated-text,
+  .reader-dialog .block-overlay.highlighted,
   .reader-divider span
 ) {
   border-radius: var(--radius-xs) !important;
@@ -90,8 +90,6 @@
   border-radius: 0 !important;
 }
 :is(
-  .organize-section,
-  .translation-status-line,
   .status-panel,
   .usage-panel,
   .usage-window,
@@ -174,7 +172,7 @@
     .queue-image,
     .page-thumb,
     .block-overlay,
-    .translation-block.highlighted .translated-text,
+    .reader-dialog .block-overlay.highlighted,
     .reader-divider span,
     .reader-dialog .page-control input,
     .reader-dialog .zoom-select,
@@ -183,8 +181,6 @@
     .paper-drag-preview > img,
     .crop-controls input,
     .paper-chat-citations .button,
-    .organize-section,
-    .translation-status-line,
     .status-panel,
     .usage-panel,
     .usage-window,
@@ -1096,7 +1092,6 @@ body:has(#settings-dialog[open]) {
 /* Reader text selection: article layout, native ranges and contextual tools. */
 .reader-dialog .translation-block,
 .reader-dialog .translation-block:hover,
-.reader-dialog .translation-block.selected,
 .reader-dialog .translation-block:hover:not(.selected) {
   background: transparent !important;
   border: 0;
@@ -1500,13 +1495,6 @@ body:has(#settings-dialog[open]) {
   padding-inline: 0.6rem;
   white-space: normal;
   line-height: 1.5;
-}
-#detail-dialog .translation-status-line {
-  display: grid;
-  gap: 0.65rem;
-}
-#detail-dialog .translation-status-line > p {
-  margin: 0;
 }
 #detail-dialog .detail-overview,
 #detail-dialog .detail-notes {

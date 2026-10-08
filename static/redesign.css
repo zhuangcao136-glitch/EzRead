@@ -1042,27 +1042,6 @@ dialog::backdrop {
 .detail-start .button {
   flex: 1;
 }
-.detail-info-grid {
-  gap: 1.6rem;
-}
-.detail-info-grid > div {
-  min-width: 0;
-}
-.detail-disclosure {
-  border-top: 1px solid var(--line);
-  padding: 1rem 0;
-}
-.detail-disclosure > summary {
-  cursor: pointer;
-  font-weight: 600;
-  color: var(--ink);
-  padding: 0.25rem 0 0.75rem;
-}
-.translation-status-line {
-  border-radius: 12px;
-  padding: 1rem;
-  background: var(--surface-subtle);
-}
 .queue-item {
   border-radius: 14px;
   padding: 1.15rem;

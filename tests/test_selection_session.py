@@ -75,7 +75,8 @@ class SelectionSessionTests(unittest.TestCase):
             def post(body, origin=None):
                 headers = {'Content-Type': 'application/json'}
                 if origin: headers['Origin'] = origin
-                return opener.open(urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers), timeout=1)
+                # Origin rejection does not read the body; avoid a Windows TCP reset.
+                return opener.open(urllib.request.Request(url, data=b'' if origin else json.dumps(body).encode(), headers=headers), timeout=1)
             try:
                 with patch.object(server, 'PORT', httpd.server_port):
                     with post({}) as response:
