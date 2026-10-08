@@ -226,7 +226,10 @@
   --edge-light-bottom: rgb(255 255 255 / 0.16);
   --edge-light-soft: rgb(255 255 255 / 0.1);
   --paper-depth: 0 10px 26px var(--glass-shadow, #1b2c1e16);
-  border-color: transparent !important;
+  /* Transparent borders still snap to physical pixels under WebView zoom.
+     Fixed padding reserves the same space without changing card geometry. */
+  border: 0;
+  padding: 1px;
   box-shadow:
     0 0 1.5px 0.2px var(--edge-light-side),
     var(--paper-depth) !important;
@@ -250,6 +253,7 @@
 /* Keep the library width constant when a modal locks the viewport scrollbar. */
 html {
   scrollbar-gutter: stable;
+  overflow-x: clip;
 }
 body:has(#settings-dialog[open]) {
   overflow: hidden;

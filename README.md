@@ -35,32 +35,16 @@
 目前采用源码运行方式，主要面向 Windows。准备好可使用 Codex 的账号，并在本机安装、登录 Codex。桌面端入口可参考 [OpenAI 官方说明](https://learn.chatgpt.com/docs/app)。
 
 1. 点击[下载源码 ZIP](https://github.com/zhuangcao136-glitch/EzRead/archive/refs/heads/main.zip)，或在仓库首页选择 **Code → Download ZIP**。
-2. 将 ZIP 解压到希望长期存放软件的位置，例如 `D:\Apps\EzRead`。打开 Codex，新建或添加本地项目，选择解压后包含 `README.md` 和 `AGENTS.md` 的文件夹。
+2. 将 ZIP 解压到希望长期存放软件的位置，例如 `D:\Apps\EzRead`。打开 Codex，新建项目，选择那个文件夹。
 3. 在该项目中新建对话，复制并发送下面这段话：
 
 ```text
 请阅读当前文件夹中的 AGENTS.md 和 README.md，将 EzRead 适配到本电脑，检查并配置运行所需依赖，构建桌面组件，检查官方 Codex CLI 是否可用及其 ChatGPT 登录状态；需要我登录时告诉我。完成后创建桌面快捷方式，启动软件并验证窗口能够正常打开。不要导入真实论文或发起全文翻译、论文问答来测试安装。
 ```
 
-4. 按 Codex 的提示完成必要的安装与账号登录。配置完成后，通过桌面 **EzRead** 快捷方式，或项目内的 **`启动EzRead.vbs`** 打开软件。
+4. 按 Codex 的提示完成必要的安装与账号登录。配置完成后，通过桌面 **EzRead** 快捷方式打开软件。
 
 运行依赖包括 Python 3.10+、`requirements.txt` 中的包、.NET Framework 4.8 与 WebView2 Runtime；AI 功能另需已登录的官方 Codex CLI。Codex 可协助配置，但安装结果仍取决于本机环境与网络。
-
-<details>
-<summary>手动配置入口</summary>
-
-在项目根目录、可用的 Python 环境中执行：
-
-```powershell
-python -m pip install -r requirements.txt
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File setup-desktop.ps1
-python launch.pyw
-```
-
-桌面构建需要联网下载 WebView2 SDK。缺少 WebView2 Runtime 时，从[微软官网](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)安装。模型功能使用 ChatGPT 登录方式，必要时运行 `codex login`；参见 [OpenAI 登录说明](https://learn.chatgpt.com/docs/auth)。
-
-</details>
 
 ## 日常怎么用
 
@@ -82,7 +66,7 @@ python launch.pyw
 
 ## 使用前了解这几件事
 
-- **“重新连接 5/5”的解决办法**：打开软件后首次划线翻译时，如果出现“重新连接 5/5”，请直接向 Codex 发送下面这句话。经作者实际验证，将当前网络代理配置写入 Codex 的环境配置文件，大概率能解决这一问题。配置完成后重启 EzRead，再尝试翻译。
+- **“重新连接 5/5”的解决办法**：由于国内网络原因，codex可能会出现“重新连接 5/5”，请直接向 Codex 发送下面这句话。经作者实际验证，将当前网络代理配置写入 Codex 的环境配置文件，有概率能解决这一问题。配置完成后重启 EzRead，再尝试翻译。
 
   ```text
   把当前的网络代理配置写入codex/.env，如果没有的话就新建。

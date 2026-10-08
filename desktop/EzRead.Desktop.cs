@@ -206,9 +206,17 @@ internal sealed class ReaderWindow : Form
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int width, int height, uint flags);
     [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr icon);
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern int GetSystemMetricsForDpi(int index, uint dpi);
+    [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] private static extern bool GetClientRect(IntPtr window, out NativeRect rect);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+    [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")] private static extern bool AdjustWindowRectExForDpi(ref NativeRect rect, uint style, bool menu, uint extendedStyle, uint dpi);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     private readonly ShellOptions options;
     private readonly WebView2 view = new WebView2();
-    private readonly Panel viewport = new Panel { AutoScroll = true, Dock = DockStyle.Fill };
+    private readonly Panel viewport = new Panel { Dock = DockStyle.Fill };
     private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
     private readonly Icon captionIcon;
     private readonly System.Windows.Forms.Timer viewportTimer = new System.Windows.Forms.Timer { Interval = 100 };
@@ -216,6 +224,10 @@ internal sealed class ReaderWindow : Form
     private Size? smokeMonitorSize;
     private Rectangle fittedMonitorArea;
     private double fittedDeviceScale;
+    private int fittedMinimumWindowWidth;
+    private int viewportOffset;
+    private bool viewportModal;
+    private int viewportOffsetBeforeModal;
     private bool fittingViewport;
     private bool ready, preparingClose, mayClose;
     private readonly OwnedBackend backend;
@@ -223,6 +235,7 @@ internal sealed class ReaderWindow : Form
     public ReaderWindow(ShellOptions value)
     {
         options = value;
+        viewport.AutoScroll = options.Child;
         if (!options.Child) backend = new OwnedBackend(options);
         Text = "\u200b"; AccessibleName = "EzRead";
         Icon = new Icon(Path.Combine(options.Root, "static", "ezread.ico"), 32, 32);
@@ -271,8 +284,57 @@ internal sealed class ReaderWindow : Form
         return smokeMonitorSize.HasValue ? new Rectangle(Point.Empty, smokeMonitorSize.Value) : Screen.FromControl(this).WorkingArea;
     }
     private void UpdateMinimumSize(Rectangle area) {
-        var minimum = new Size((area.Width + 1) / 2, (area.Height + 1) / 2);
+        int width = Math.Max((area.Width + 1) / 2, area == fittedMonitorArea ? fittedMinimumWindowWidth : 0);
+        var minimum = new Size(width, (area.Height + 1) / 2);
         if (MinimumSize != minimum) MinimumSize = minimum;
+        // Use physical geometry: legacy WinForms caches can retain the previous
+        // monitor's non-client size after a DPI change or programmatic resize.
+        NativeRect bounds;
+        if (WindowState == FormWindowState.Normal && GetWindowRect(Handle, out bounds) && bounds.Right - bounds.Left < minimum.Width)
+            SetWindowPos(Handle, IntPtr.Zero, 0, 0, minimum.Width, bounds.Bottom - bounds.Top, 0x16);
+    }
+    private int WindowScrollBarWidth() {
+        try { return Math.Max(1, GetSystemMetricsForDpi(2, GetDpiForWindow(Handle))); }
+        catch (EntryPointNotFoundException) { return SystemInformation.VerticalScrollBarWidth; }
+    }
+    private Size WindowFrameSize() {
+        try {
+            var rect = new NativeRect();
+            uint style = unchecked((uint)GetWindowLong(Handle, -16)) & ~0x01000000u;
+            if (AdjustWindowRectExForDpi(ref rect, style, false, unchecked((uint)GetWindowLong(Handle, -20)), GetDpiForWindow(Handle)))
+                return new Size(rect.Right - rect.Left, rect.Bottom - rect.Top);
+        } catch (EntryPointNotFoundException) { }
+        return SizeFromClientSize(Size.Empty);
+    }
+    private Size ViewportClientSize() {
+        NativeRect rect;
+        return GetClientRect(viewport.Handle, out rect) ? new Size(rect.Right - rect.Left, rect.Bottom - rect.Top) : viewport.ClientSize;
+    }
+    private int ViewportViewWidth() {
+        NativeRect bounds; var client = ViewportClientSize();
+        if (!options.Child) return Math.Max(1, client.Width);
+        int width = GetWindowRect(viewport.Handle, out bounds) ? bounds.Right - bounds.Left : viewport.Width;
+        return Math.Max(1, Math.Min(client.Width, width - WindowScrollBarWidth()));
+    }
+    private void SetViewportOffset(int offset) {
+        if (options.Child) return;
+        int maximum = Math.Max(0, view.Height - ViewportClientSize().Height);
+        viewportOffset = Math.Max(0, Math.Min(maximum, offset));
+        view.Location = new Point(0, -viewportOffset);
+    }
+    private void ReceiveViewportMessage(string message) {
+        try {
+            object packet = json.DeserializeObject(message);
+            if (packet as string == "ezread-fit-viewport") { RequestViewportFit(); return; }
+            var wheel = packet as Dictionary<string, object>;
+            if (wheel == null || !wheel.ContainsKey("type") || wheel["type"] as string != "ezread-sidebar-wheel" || !wheel.ContainsKey("deltaY") || !wheel.ContainsKey("pixelRatio")) return;
+            double delta = Convert.ToDouble(wheel["deltaY"]), ratio = Convert.ToDouble(wheel["pixelRatio"]);
+            if (double.IsNaN(delta) || double.IsInfinity(delta) || Math.Abs(delta) > 20000 || double.IsNaN(ratio) || double.IsInfinity(ratio) || ratio <= 0 || ratio > 16) return;
+            SetViewportOffset(viewportOffset + (int)Math.Round(delta * ratio));
+        } catch (ArgumentException) { }
+        catch (FormatException) { }
+        catch (InvalidCastException) { }
+        catch (OverflowException) { }
     }
     private async Task FitViewport() {
         if (!ready || IsDisposed || WindowState == FormWindowState.Minimized) return;
@@ -280,26 +342,32 @@ internal sealed class ReaderWindow : Form
         fittingViewport = true;
         try {
             var area = MonitorArea(); UpdateMinimumSize(area);
-            var frame = SizeFromClientSize(Size.Empty);
-            // Reserve the native vertical scrollbar's lane even while hidden;
-            // showing it after a height-only resize must not move the cards.
-            int fullWidth = Math.Max(1, area.Width - frame.Width - SystemInformation.VerticalScrollBarWidth), fullHeight = Math.Max(1, area.Height - frame.Height);
+            var frame = WindowFrameSize();
+            int scrollbarWidth = options.Child ? WindowScrollBarWidth() : 0;
+            // The main window clips a fixed-height page without native bars.
+            int fullWidth = Math.Max(1, area.Width - frame.Width - scrollbarWidth), fullHeight = Math.Max(1, area.Height - frame.Height);
             if (options.Child) {
                 view.ZoomFactor = 1;
-                view.Size = new Size(Math.Max(1, viewport.Width - SystemInformation.VerticalScrollBarWidth), fullHeight);
+                view.Size = new Size(ViewportViewWidth(), fullHeight);
                 return;
             }
             string value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify(ezreadDesktopViewportMetrics())");
             var metrics = json.Deserialize<Dictionary<string, object>>(json.Deserialize<string>(value));
+            bool modal = metrics.ContainsKey("dialogOpen") && Convert.ToBoolean(metrics["dialogOpen"]);
+            if (modal != viewportModal) {
+                if (modal) viewportOffsetBeforeModal = viewportOffset;
+                else viewportOffset = viewportOffsetBeforeModal;
+                viewportModal = modal;
+            }
+            int pageHeight = modal ? Math.Max(1, Math.Min(fullHeight, ViewportClientSize().Height)) : fullHeight;
             double gutter = Convert.ToDouble(metrics["gutter"]);
             double deviceScale = Convert.ToDouble(metrics["pixelRatio"]) / view.ZoomFactor;
             // Use the monitor's longer axis, so portrait screens keep readable
             // cards and fewer columns. Window resize never determines page zoom.
             if (area != fittedMonitorArea || Math.Abs(deviceScale - fittedDeviceScale) > .0001) {
-                // Calibrate once against the monitor, then lock this zoom for
-                // normal resizes. Temporary reference width also works on a
-                // portrait monitor and when startup restores a small window.
-                view.Size = new Size(Math.Max(fullWidth, fullHeight), fullHeight);
+                // Calibrate from monitor dimensions and DPI without widening
+                // the WebView beyond this window; normal resizes keep its zoom.
+                view.Size = new Size(ViewportViewWidth(), pageHeight);
                 await Task.Delay(75);
                 for (int attempt = 0; attempt < 4; attempt++) {
                     value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify(ezreadDesktopViewportMetrics())");
@@ -314,10 +382,15 @@ internal sealed class ReaderWindow : Form
             }
             double zoom = view.ZoomFactor;
             int minimumWidth = (int)Math.Ceiling((Convert.ToDouble(metrics["minimumWidth"]) + gutter) * deviceScale * zoom);
-            var size = new Size(Math.Max(viewport.Width - SystemInformation.VerticalScrollBarWidth, minimumWidth), fullHeight);
+            // Enforce two complete columns at the native window boundary. The
+            // page always fits horizontally, so no horizontal pan is needed.
+            fittedMinimumWindowWidth = minimumWidth + frame.Width + scrollbarWidth;
+            UpdateMinimumSize(area);
+            // The panel's client width is authoritative at every monitor DPI;
+            // system-wide scrollbar metrics can leave a few pixels of overflow.
+            var size = new Size(ViewportViewWidth(), pageHeight);
             if (view.Size != size) view.Size = size;
-            // Native scrollbars pan the entire view, even while a modal dialog
-            // makes its document background inert. Keep positions on resize.
+            SetViewportOffset(viewportOffset);
         } catch (Exception exc) { Log("viewport-fit: " + exc.GetType().Name); }
         finally { fittingViewport = false; }
     }
@@ -349,9 +422,9 @@ internal sealed class ReaderWindow : Form
                 core.WebMessageReceived += delegate(object sender, CoreWebView2WebMessageReceivedEventArgs e) {
                     if (!options.IsLocal(e.Source)) return;
                     Uri source; if (!Uri.TryCreate(e.Source, UriKind.Absolute, out source) || (source.AbsolutePath != "/" && source.AbsolutePath != "/static/index.html")) return;
-                    try { if (e.TryGetWebMessageAsString() == "ezread-fit-viewport") RequestViewportFit(); } catch (ArgumentException) { }
+                    ReceiveViewportMessage(e.WebMessageAsJson);
                 };
-                await core.AddScriptToExecuteOnDocumentCreatedAsync("(()=>{if(window.top!==window)return;const fit=()=>window.chrome?.webview?.postMessage('ezread-fit-viewport');window.addEventListener('resize',fit);document.addEventListener('DOMContentLoaded',()=>{let font=getComputedStyle(document.documentElement).fontSize;new MutationObserver(()=>{const next=getComputedStyle(document.documentElement).fontSize;if(next!==font){font=next;fit();}}).observe(document.documentElement,{attributes:true,attributeFilter:['style']});fit();},{once:true});})();");
+                await core.AddScriptToExecuteOnDocumentCreatedAsync("(()=>{if(window.top!==window)return;const fit=()=>window.chrome?.webview?.postMessage('ezread-fit-viewport');window.addEventListener('resize',fit);document.addEventListener('DOMContentLoaded',()=>{let font=getComputedStyle(document.documentElement).fontSize;new MutationObserver(()=>{const next=getComputedStyle(document.documentElement).fontSize;if(next!==font){font=next;fit();}}).observe(document.documentElement,{attributes:true,attributeFilter:['style']});new MutationObserver(changes=>{if(changes.some(change=>change.target.tagName==='DIALOG'))fit();}).observe(document.body,{subtree:true,attributes:true,attributeFilter:['open']});fit();},{once:true});})();");
                 view.ZoomFactorChanged += delegate { RequestViewportFit(); };
             }
             core.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e) {
@@ -478,34 +551,78 @@ internal sealed class ReaderWindow : Form
     }
     private async Task SetSmokeViewport(Size monitor, Size client) {
         smokeMonitorSize = monitor; UpdateMinimumSize(MonitorArea());
-        viewport.AutoScrollPosition = Point.Empty; ClientSize = client;
+        var frame = WindowFrameSize();
+        SetViewportOffset(0); Size = new Size(client.Width + frame.Width, client.Height + frame.Height);
         RequestViewportFit(); await Task.Delay(350); await FitViewport(); await Task.Delay(200);
     }
+    private async Task WaitSmokeLayout() {
+        // Transparent/offscreen WebViews throttle animation frames. Let the
+        // real resize observer and its scheduled masonry pass finish first.
+        await view.CoreWebView2.ExecuteScriptAsync("window.__smokeLayoutReady=false;requestAnimationFrame(()=>requestAnimationFrame(()=>window.__smokeLayoutReady=true));");
+        for (int attempt = 0; attempt < 80; attempt++) {
+            await Task.Delay(50);
+            if (await view.CoreWebView2.ExecuteScriptAsync("window.__smokeLayoutReady") == "true") return;
+        }
+        throw new InvalidOperationException("The transparent DPI fixture did not finish its layout frames.");
+    }
+    private async Task SmokeWheel(bool sidebar, double delta) {
+        string value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({x:" + (sidebar ? "20" : "document.querySelector('.sidebar').getBoundingClientRect().right+80") + ",y:" + viewportOffset + "/devicePixelRatio+30})");
+        var point = json.Deserialize<Dictionary<string, object>>(json.Deserialize<string>(value));
+        await view.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", json.Serialize(new { type = "mouseWheel", x = Convert.ToDouble(point["x"]), y = Convert.ToDouble(point["y"]), deltaX = 0, deltaY = delta }));
+        await Task.Delay(200);
+    }
+    private async Task<object> SmokeWheelState(string label) {
+        string value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({cardScroll:scrollY,sidebarScroll:document.querySelector('.sidebar').scrollTop})");
+        return new { label = label, offset = viewportOffset, maximum = Math.Max(0, view.Height - ViewportClientSize().Height), viewTop = view.Top,
+            horizontal = viewport.HorizontalScroll.Visible, vertical = viewport.VerticalScroll.Visible, page = json.DeserializeObject(json.Deserialize<string>(value)) };
+    }
     private async Task<object> SmokeLayout(string label) {
-        string layout = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({viewport:document.body.clientWidth,height:innerHeight,tracks:getComputedStyle(document.querySelector('#paper-grid')).gridTemplateColumns.split(/\\s+/).map(parseFloat),grid:document.querySelector('#paper-grid').getBoundingClientRect().toJSON(),container:document.querySelector('#library-view').getBoundingClientRect().toJSON(),sidebar:document.querySelector('.sidebar').getBoundingClientRect().width,footer:document.querySelector('.library-footer').getBoundingClientRect().toJSON(),dialog:[...document.querySelectorAll('dialog[open]')].map(n=>({id:n.id,...n.getBoundingClientRect().toJSON()})),cards:[...document.querySelectorAll('.paper-card')].map(n=>({id:n.dataset.paperId,x:n.offsetLeft,y:n.offsetTop,width:n.offsetWidth,height:n.offsetHeight,title:n.querySelector('.card-title').textContent}))})");
+        string cardBox = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify((()=>{const n=document.querySelector('.paper-card'),s=getComputedStyle(n),covers=[...document.querySelectorAll('.card-cover img')];return{borderTop:parseFloat(s.borderTopWidth),borderBottom:parseFloat(s.borderBottomWidth),paddingTop:parseFloat(s.paddingTop),paddingBottom:parseFloat(s.paddingBottom),height:n.getBoundingClientRect().height,bodyHeight:n.querySelector('.card-body').getBoundingClientRect().height,contentHeight:n.querySelector('.card-content').getBoundingClientRect().height,pixelRatio:devicePixelRatio,coverCount:covers.length,loadedCovers:covers.filter(n=>n.complete&&n.naturalWidth>0).length,coverRatios:[...new Set(covers.map(n=>n.naturalWidth+'/'+n.naturalHeight))]};})())");
+        string layout = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify({viewport:document.body.clientWidth,height:innerHeight,innerWidth:innerWidth,documentWidth:document.documentElement.scrollWidth,overflowX:getComputedStyle(document.documentElement).overflowX,tracks:getComputedStyle(document.querySelector('#paper-grid')).gridTemplateColumns.split(/\\s+/).map(parseFloat),grid:document.querySelector('#paper-grid').getBoundingClientRect().toJSON(),container:document.querySelector('#library-view').getBoundingClientRect().toJSON(),sidebar:document.querySelector('.sidebar').getBoundingClientRect().width,footer:document.querySelector('.library-footer').getBoundingClientRect().toJSON(),dialog:[...document.querySelectorAll('dialog[open]')].map(n=>({id:n.id,...n.getBoundingClientRect().toJSON()})),cards:[...document.querySelectorAll('.paper-card')].map(n=>({id:n.dataset.paperId,x:n.offsetLeft,y:n.offsetTop,width:n.offsetWidth,height:n.offsetHeight,title:n.querySelector('.card-title').textContent}))})");
         using (var preview = new MemoryStream()) {
             await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, preview);
             preview.Position = 0;
             using (var bitmap = new Bitmap(preview)) {
-                int left = Math.Max(0, -viewport.AutoScrollPosition.X), top = Math.Max(0, -viewport.AutoScrollPosition.Y);
-                var crop = new Rectangle(left, top, Math.Min(viewport.ClientSize.Width, bitmap.Width - left), Math.Min(viewport.ClientSize.Height, bitmap.Height - top));
+                int top = viewportOffset;
+                var crop = new Rectangle(0, top, Math.Min(viewport.ClientSize.Width, bitmap.Width), Math.Min(viewport.ClientSize.Height, bitmap.Height - top));
                 using (var visible = bitmap.Clone(crop, bitmap.PixelFormat)) visible.Save(options.SmokeReport + "." + label + ".png", System.Drawing.Imaging.ImageFormat.Png);
             }
         }
-        return new { label = label, clientWidth = viewport.ClientSize.Width, clientHeight = viewport.ClientSize.Height,
+        var physicalClient = ViewportClientSize();
+        return new { label = label, clientWidth = physicalClient.Width, clientHeight = physicalClient.Height,
+            windowWidth = Width, windowClientWidth = ClientSize.Width, windowState = WindowState.ToString(),
+            windowDpi = GetDpiForWindow(Handle), scrollbarWidth = WindowScrollBarWidth(), systemScrollbarWidth = SystemInformation.VerticalScrollBarWidth,
+            monitorWidth = MonitorArea().Width, monitorHeight = MonitorArea().Height,
+            viewportWidth = viewport.Width, viewportHeight = viewport.Height,
+            horizontalScroll = viewport.HorizontalScroll.Visible, verticalScroll = viewport.VerticalScroll.Visible,
             viewWidth = view.Width, viewHeight = view.Height, minimumWidth = MinimumSize.Width, minimumHeight = MinimumSize.Height,
-            scrollX = -viewport.AutoScrollPosition.X, scrollY = -viewport.AutoScrollPosition.Y,
-            zoomFactor = view.ZoomFactor, layout = json.DeserializeObject(json.Deserialize<string>(layout)) };
+            scrollY = viewportOffset, maximumOffset = Math.Max(0, view.Height - physicalClient.Height), viewTop = view.Top,
+            zoomFactor = view.ZoomFactor, cardBox = json.DeserializeObject(json.Deserialize<string>(cardBox)), layout = json.DeserializeObject(json.Deserialize<string>(layout)) };
     }
     private async Task SmokeTest(CoreWebView2Environment environment) {
         await Task.Delay(1600);
-        var frame = SizeFromClientSize(Size.Empty);
+        // Fixture covers must finish loading before comparing geometry. Lazy
+        // loading must not turn a cross-monitor test into a loading-time test.
+        await view.CoreWebView2.ExecuteScriptAsync("window.__smokeCoversReady=false;(async()=>{const covers=[...document.querySelectorAll('.card-cover img')];covers.forEach(n=>n.loading='eager');await Promise.allSettled(covers.map(n=>n.decode()));window.__smokeCoversReady=true;})();");
+        for (int i = 0; i < 100; i++) { if (await view.CoreWebView2.ExecuteScriptAsync("window.__smokeCoversReady") == "true") break; await Task.Delay(50); }
+        var frame = WindowFrameSize();
         var layouts = new List<object>();
         foreach (var size in new[] { new Size(1366, 768), new Size(1920, 1080), new Size(2560, 1440) }) {
             await SetSmokeViewport(size, new Size(size.Width - frame.Width, size.Height - frame.Height));
             layouts.Add(await SmokeLayout(size.Width.ToString()));
         }
         var viewportChecks = new List<object>();
+        var wheelChecks = new List<object>();
+        // Full-height snaps and restoration must not gain native scrollbars.
+        foreach (var monitor in new[] { new Size(1366, 768), new Size(1920, 1080), new Size(2560, 1440), new Size(1280, 1440), new Size(1080, 1920) }) {
+            string label = "snap-" + monitor.Width + "x" + monitor.Height;
+            await SetSmokeViewport(monitor, new Size(monitor.Width - frame.Width, monitor.Height - frame.Height));
+            viewportChecks.Add(await SmokeLayout(label + "-full"));
+            await SetSmokeViewport(monitor, new Size((monitor.Width + 1) / 2 - frame.Width, monitor.Height - frame.Height));
+            viewportChecks.Add(await SmokeLayout(label + "-half"));
+            await SetSmokeViewport(monitor, new Size(monitor.Width - frame.Width, monitor.Height - frame.Height));
+            viewportChecks.Add(await SmokeLayout(label + "-restored"));
+        }
         var landscape = new Size(1920, 1080);
         int landscapeHeight = landscape.Height - frame.Height;
         await SetSmokeViewport(landscape, new Size(landscape.Width - frame.Width, landscapeHeight)); viewportChecks.Add(await SmokeLayout("normal-five"));
@@ -513,13 +630,48 @@ internal sealed class ReaderWindow : Form
             await SetSmokeViewport(landscape, new Size(width, landscapeHeight)); viewportChecks.Add(await SmokeLayout("normal-" + width));
         }
         await SetSmokeViewport(landscape, new Size(1280, 540)); viewportChecks.Add(await SmokeLayout("flat"));
-        viewport.AutoScrollPosition = new Point(0, 10000); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("flat-scrolled"));
+        wheelChecks.Add(await SmokeWheelState("before"));
+        await SmokeWheel(true, 150); wheelChecks.Add(await SmokeWheelState("sidebar-down"));
+        await SmokeWheel(false, 150); wheelChecks.Add(await SmokeWheelState("cards-down"));
+        await SmokeWheel(true, -150); wheelChecks.Add(await SmokeWheelState("sidebar-up"));
+        await SmokeWheel(true, 10000); wheelChecks.Add(await SmokeWheelState("sidebar-bottom"));
+        await SmokeWheel(true, 10000); wheelChecks.Add(await SmokeWheelState("sidebar-bottom-again"));
+        await SmokeWheel(true, -10000); wheelChecks.Add(await SmokeWheelState("sidebar-top"));
+        await view.CoreWebView2.ExecuteScriptAsync("scrollTo(0,0)"); await Task.Delay(200);
+        SetViewportOffset(10000); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("flat-scrolled"));
         var portrait = new Size(1080, 1920);
         await SetSmokeViewport(portrait, new Size(portrait.Width - frame.Width, portrait.Height - frame.Height)); viewportChecks.Add(await SmokeLayout("portrait"));
         await SetSmokeViewport(portrait, new Size(1, 1)); viewportChecks.Add(await SmokeLayout("portrait-minimum"));
-        await view.CoreWebView2.ExecuteScriptAsync("openSettings()"); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("clipped-settings"));
-        viewport.AutoScrollPosition = new Point(10000, 10000); await Task.Delay(150); viewportChecks.Add(await SmokeLayout("clipped-settings-scrolled"));
+        SetViewportOffset(10000); int offsetBeforeModal = viewportOffset;
+        await view.CoreWebView2.ExecuteScriptAsync("openSettings()"); await Task.Delay(350); await FitViewport(); await WaitSmokeLayout(); viewportChecks.Add(await SmokeLayout("short-settings"));
+        await SmokeWheel(true, 150); viewportChecks.Add(await SmokeLayout("short-settings-wheel"));
         await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('#settings-dialog').close()");
+        await Task.Delay(350); await FitViewport();
+        wheelChecks.Add(new { label = "modal-restored", before = offsetBeforeModal, offset = viewportOffset });
+        // Exercise actual monitor DPI, including non-client scrollbars. Opacity
+        // keeps our fixture window invisible while Windows delivers DPI changes.
+        var dpiChecks = new List<object>(); var originalLocation = Location;
+        Opacity = 0;
+        int screenIndex = 0;
+        foreach (var screen in Screen.AllScreens) {
+            Location = new Point(screen.WorkingArea.Left + 40, screen.WorkingArea.Top + 40);
+            await Task.Delay(200);
+            var monitor = screen.WorkingArea.Size; var monitorFrame = WindowFrameSize();
+            string label = "dpi-screen-" + screenIndex++;
+            await SetSmokeViewport(monitor, new Size(monitor.Width - monitorFrame.Width, monitor.Height - monitorFrame.Height));
+            await WaitSmokeLayout();
+            dpiChecks.Add(await SmokeLayout(label + "-full"));
+            await SetSmokeViewport(monitor, new Size((int)(monitor.Width * .66) - monitorFrame.Width, (int)(monitor.Height * .75) - monitorFrame.Height));
+            await WaitSmokeLayout();
+            dpiChecks.Add(await SmokeLayout(label + "-short"));
+            wheelChecks.Add(await SmokeWheelState(label + "-wheel-before"));
+            await SmokeWheel(true, 150); wheelChecks.Add(await SmokeWheelState(label + "-wheel-down"));
+            await SmokeWheel(true, -150); wheelChecks.Add(await SmokeWheelState(label + "-wheel-up"));
+            await SetSmokeViewport(monitor, new Size((monitor.Width + 1) / 2 - monitorFrame.Width, monitor.Height - monitorFrame.Height));
+            await WaitSmokeLayout();
+            dpiChecks.Add(await SmokeLayout(label + "-half"));
+        }
+        Location = originalLocation; await Task.Delay(200); Opacity = 1;
         await SetSmokeViewport(new Size(2560, 1440), new Size(2560 - frame.Width, 1440 - frame.Height));
         double beforeSettingsZoom = view.ZoomFactor;
         await view.CoreWebView2.ExecuteScriptAsync("window.__settingsProbe=null;(async()=>{const snap=()=>({width:document.body.clientWidth,scroll:scrollY,cards:[...document.querySelectorAll('.paper-card')].map(n=>[n.offsetLeft,n.offsetTop,n.offsetWidth,n.offsetHeight])});scrollTo(0,180);await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const before=snap();await openSettings();await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const frames=[];document.querySelector('#settings-tab-journals').click();for(let i=0;i<45;i++){await new Promise(requestAnimationFrame);frames.push(snap());}document.querySelector('#settings-tab-appearance').click();for(let i=0;i<30;i++){await new Promise(requestAnimationFrame);frames.push(snap());}document.querySelector('#settings-dialog').close();for(let i=0;i<15;i++){await new Promise(requestAnimationFrame);frames.push(snap());}window.__settingsProbe={before,frames};})();");
@@ -536,7 +688,7 @@ internal sealed class ReaderWindow : Form
                 for (int y = 0; iconMatches && y < actual.Height; y++) for (int x = 0; x < actual.Width; x++) if (actual.GetPixel(x, y) != expected.GetPixel(x, y)) { iconMatches = false; break; }
             }
         } finally { if (expectedHandle != IntPtr.Zero) DestroyIcon(expectedHandle); }
-        var report = new { processId = Process.GetCurrentProcess().Id, browserProcessId = view.CoreWebView2.BrowserProcessId, webViewVersion = environment.BrowserVersionString, hostExecutable = Application.ExecutablePath, windowTitle = Text, bigIconPresent = big != IntPtr.Zero, bigIconOwned = big == Icon.Handle, bigIconMatchesBook = iconMatches, captionIconOwned = SendMessage(Handle, 0x7f, IntPtr.Zero, IntPtr.Zero) == captionIcon.Handle, page = json.DeserializeObject(json.Deserialize<string>(state)), layouts = layouts, viewportChecks = viewportChecks, settingsBackground = settingsBackground };
+        var report = new { processId = Process.GetCurrentProcess().Id, browserProcessId = view.CoreWebView2.BrowserProcessId, webViewVersion = environment.BrowserVersionString, hostExecutable = Application.ExecutablePath, windowTitle = Text, bigIconPresent = big != IntPtr.Zero, bigIconOwned = big == Icon.Handle, bigIconMatchesBook = iconMatches, captionIconOwned = SendMessage(Handle, 0x7f, IntPtr.Zero, IntPtr.Zero) == captionIcon.Handle, page = json.DeserializeObject(json.Deserialize<string>(state)), layouts = layouts, viewportChecks = viewportChecks, dpiChecks = dpiChecks, wheelChecks = wheelChecks, settingsBackground = settingsBackground };
         File.WriteAllText(options.SmokeReport, json.Serialize(report), Encoding.UTF8);
         Close();
     }

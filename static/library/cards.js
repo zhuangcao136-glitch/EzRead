@@ -20,13 +20,30 @@ function renderLibrary() {
   else grid.replaceChildren();
   renderLegend(); renderBulkbar(papers);
 }
+function measurePaperCardHeight(card, width, cache) {
+  const image = card.querySelector("img"), font = getComputedStyle(document.documentElement).fontSize;
+  const key = `${width}:${font}:${card.textContent}:${image?.currentSrc || ""}:${image?.naturalWidth || 0}:${image?.naturalHeight || 0}`;
+  const saved = cache.get(card);
+  if (saved?.key === key) return saved.height;
+  // Cancel the native page scale only for an invisible measuring copy. Fonts
+  // and borders then use one physical pixel per logical CSS pixel everywhere.
+  const clone = card.cloneNode(true), pixelRatio = window.devicePixelRatio || 1;
+  clone.inert = true; clone.setAttribute("aria-hidden", "true");
+  Object.assign(clone.style, { position: "fixed", left: "-10000px", top: "0", width: `${width}px`, height: "auto", margin: "0", visibility: "hidden", pointerEvents: "none", transform: "none", zoom: String(1 / pixelRatio) });
+  const clonedImage = clone.querySelector("img");
+  if (clonedImage && image.naturalWidth) { clonedImage.width = image.naturalWidth; clonedImage.height = image.naturalHeight; }
+  document.body.append(clone);
+  const height = Math.ceil(clone.getBoundingClientRect().height * pixelRatio);
+  clone.remove(); cache.set(card, { key, height });
+  return height;
+}
 function paperLayoutMetrics(grid = $("#paper-grid")) {
   const container = grid.parentElement, containerStyle = getComputedStyle(container);
-  const sidebar = $(".sidebar"), gap = Number.parseFloat(getComputedStyle(grid).columnGap) || 0;
+  const sidebar = $(".sidebar"), gap = Math.round((Number.parseFloat(getComputedStyle(grid).columnGap) || 0) * 10) / 10;
   const padding = (Number.parseFloat(containerStyle.paddingLeft) || 0) + (Number.parseFloat(containerStyle.paddingRight) || 0);
   const sidebarWidth = sidebar.getBoundingClientRect().width;
   // Match the existing five-column desktop at its reference body width.
-  const cardWidth = (1920 - sidebarWidth - padding - 4 * gap) / 5;
+  const cardWidth = Math.round((1920 - sidebarWidth - padding - 4 * gap) / 5 * 10) / 10;
   return { cardWidth, gap, available: container.clientWidth - padding,
     minimumWidth: sidebarWidth + padding + 2 * cardWidth + gap };
 }
@@ -35,6 +52,7 @@ function paperColumnCount(available, cardWidth, gap) {
 }
 function renderMasonry(grid, papers) {
   const cards = papers.map(renderCard);
+  const geometry = new WeakMap();
   grid.classList.add("masonry");
   grid.replaceChildren(...cards);
   let scheduled = false;
@@ -50,22 +68,27 @@ function renderMasonry(grid, papers) {
     // Resize rearranges fixed-size cards without changing text or image geometry.
     cards.forEach(card => { card.style.width = `${width}px`; });
     for (const card of cards) {
+      const height = measurePaperCardHeight(card, width, geometry);
+      card.style.height = `${height}px`;
       const column = heights.indexOf(Math.min(...heights));
       card.style.left = `${column * (width + gap)}px`;
       card.style.top = `${heights[column]}px`;
-      heights[column] += card.offsetHeight + gap;
+      heights[column] += height + gap;
     }
     grid.style.height = `${Math.max(...heights) - gap}px`;
     grid.classList.add("is-laid-out");
   };
   const schedule = () => { if (!scheduled) { scheduled = true; requestAnimationFrame(layout); } };
+  cards.forEach(card => card.querySelector("img")?.addEventListener("load", schedule));
   if (window.ResizeObserver) {
     paperLayoutObserver = new ResizeObserver(schedule);
     paperLayoutObserver.observe(grid);
     paperLayoutObserver.observe(grid.parentElement);
-    cards.forEach(card => paperLayoutObserver.observe(card));
+    cards.forEach(card => {
+      paperLayoutObserver.observe(card);
+      for (const selector of [".card-body", ".card-content"]) { const part = card.querySelector(selector); if (part) paperLayoutObserver.observe(part); }
+    });
   } else {
-    cards.forEach(card => card.querySelector("img")?.addEventListener("load", schedule));
     window.addEventListener("resize", schedule);
     paperLayoutCleanup = () => window.removeEventListener("resize", schedule);
   }

@@ -1,11 +1,31 @@
 "use strict";
 
-// The native viewport clips the complete WebView, including modal top layers.
-// Its minimum width must agree with the fixed two-column library geometry.
+// The native window's minimum width follows the two-column library geometry.
+// The shortened window pans the complete page through sidebar wheel messages.
 function ezreadDesktopViewportMetrics() {
   const layout = paperLayoutMetrics();
   return { gutter: Math.max(0, innerWidth - document.body.clientWidth),
-    minimumWidth: layout.minimumWidth, pixelRatio: devicePixelRatio };
+    minimumWidth: layout.minimumWidth, pixelRatio: devicePixelRatio,
+    dialogOpen: Boolean(document.querySelector("dialog[open]")) };
+}
+
+function ezreadDesktopSidebarWheel(event) {
+  if (event.ctrlKey || event.defaultPrevented || !event.cancelable || document.querySelector("dialog[open]")) return;
+  const sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
+  const box = sidebar.getBoundingClientRect();
+  if (event.clientX < box.left || event.clientX >= box.right || event.clientY < box.top || event.clientY >= box.bottom) return;
+  if (event.target?.closest?.("[popover]")) return;
+  const line = Number.parseFloat(getComputedStyle(sidebar).lineHeight) || 24;
+  const unit = event.deltaMode === 1 ? line : event.deltaMode === 2 ? window.innerHeight : 1;
+  const deltaY = event.deltaY * unit;
+  if (!Number.isFinite(deltaY) || !deltaY) return;
+  event.preventDefault();
+  window.chrome.webview.postMessage({ type: "ezread-sidebar-wheel", deltaY, pixelRatio: window.devicePixelRatio || 1 });
+}
+
+if (typeof window !== "undefined" && window.ezreadDesktop && window.chrome?.webview) {
+  document.addEventListener("wheel", ezreadDesktopSidebarWheel, { passive: false, capture: true });
 }
 
 // Invoked only by the native window's close handshake. Preserve local drafts

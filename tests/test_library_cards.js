@@ -92,6 +92,7 @@ const grid = {
 };
 const layoutContext = {
   renderCard: paper => cards[paper],
+  measurePaperCardHeight: card => card.offsetHeight,
   getComputedStyle: node => node === grid ? { columnGap: "16px" } : { paddingLeft: "20px", paddingRight: "20px" },
   $: () => ({ getBoundingClientRect: () => ({ width: 184 }) }),
   requestAnimationFrame: callback => { frames.push(callback); },
