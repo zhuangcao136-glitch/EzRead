@@ -11,13 +11,19 @@ async function run() {
     detailNoteSaves: new Map([[entry.id, entry]]), readerWriteLocal: () => { cached++; return true; },
     saveReadPage: async () => { throw Error('offline'); }, readerSaveNotes: async () => { readerSaved++; throw Error('offline'); } });
   vm.runInContext(source, context);
+  assert.equal(context.ezreadPersistDesktopDrafts(), true);
+  assert.equal(cached, 1);
+  assert.equal(flushed, 0, "The synchronous checkpoint preserves drafts before any asynchronous save");
+  cached = 0;
   assert.equal(await context.ezreadPrepareDesktopClose(), true);
   assert.equal(flushed, 1); assert.equal(cached, 1);
   assert.equal(readerSaved, 1);
   context.readerPersistDrafts = () => false;
+  assert.equal(context.ezreadPersistDesktopDrafts(), false);
   assert.equal(await context.ezreadPrepareDesktopClose(), false);
   assert.equal(flushed, 1);
   context.readerPersistDrafts = () => true; context.readerWriteLocal = () => false;
+  assert.equal(context.ezreadPersistDesktopDrafts(), false);
   assert.equal(await context.ezreadPrepareDesktopClose(), false);
   assert.equal(flushed, 1);
   console.log('Desktop close preserves drafts offline and blocks close when local persistence fails.');
@@ -28,5 +34,14 @@ async function run() {
   assert.equal(await context.ezreadPrepareDesktopClose(), false);
   context.pendingPreferences = {};
   assert.equal(await context.ezreadPrepareDesktopClose(), true);
+  context.localStorage = { length: 2, key: index => ["ezread-reader-notes:test-paper", "unrelated-setting"][index],
+    getItem: key => key.startsWith("ezread-reader-") ? '{"value":"recoverable note"}' : "private value" };
+  assert.deepEqual(JSON.parse(JSON.stringify(context.ezreadDesktopDraftSnapshot())),
+    { "ezread-reader-notes:test-paper": '{"value":"recoverable note"}' });
+  context.preferenceSaveBusy = true;
+  assert.equal(context.ezreadDesktopDraftSnapshot(), null, "An in-flight preference save prevents crash-close confirmation");
+  context.preferenceSaveBusy = false;
+  context.pendingPreferences = { theme: "sage" };
+  assert.equal(context.ezreadDesktopDraftSnapshot(), null);
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

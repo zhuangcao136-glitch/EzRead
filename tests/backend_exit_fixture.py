@@ -40,6 +40,8 @@ OriginalHandler = server.Handler
 CLOSE_DELAY = int(os.environ.get('EZREAD_TEST_CLOSE_DELAY_MS', '0'))
 CLOSE_FAIL_ONCE = os.environ.get('EZREAD_TEST_CLOSE_FAIL_ONCE') == '1'
 CLOSE_NOTES = os.environ.get('EZREAD_TEST_CLOSE_NOTES', '关闭握手保存的测试笔记')
+CLOSE_CRASH_NOTES = os.environ.get('EZREAD_TEST_CRASH_NOTES', '')
+CLOSE_BLOCK_CHECKPOINT = os.environ.get('EZREAD_TEST_BLOCK_CHECKPOINT') == '1'
 CLOSE_STATE = {'ready': False, 'attempts': []}
 CLOSE_LOCK = threading.Lock()
 
@@ -74,10 +76,19 @@ def close_script():
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     await openDetail('0123456789abcdef');
-    await send('ready', {});
+    const pending = __CRASH_NOTES__;
+    const textarea = document.querySelector('.notes-area');
+    if (pending) {
+      textarea.value = pending;
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      clearTimeout(detailNoteSaves.get('0123456789abcdef').timer);
+    }
+    if (__BLOCK_CHECKPOINT__) preferenceSaveBusy = true;
+    await send('ready', { notes: textarea.value });
   }, { once: true });
 })();
-'''
+'''.replace('__CRASH_NOTES__', json.dumps(CLOSE_CRASH_NOTES)).replace('__BLOCK_CHECKPOINT__',
+    json.dumps(CLOSE_BLOCK_CHECKPOINT and not CLOSE_STATE.get('readyLoads')))
 
 
 def persist_close_state():
@@ -109,6 +120,8 @@ class Handler(OriginalHandler):
             with CLOSE_LOCK:
                 if path == '/__test/ready':
                     CLOSE_STATE['ready'] = True
+                    CLOSE_STATE['readyLoads'] = CLOSE_STATE.get('readyLoads', 0) + 1
+                    CLOSE_STATE['loadedNotes'] = body.get('notes')
                     answer = {}
                 elif path == '/__test/close-start':
                     attempt = len(CLOSE_STATE['attempts']) + 1

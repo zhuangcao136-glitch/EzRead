@@ -39,6 +39,9 @@ def main():
     user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user.IsWindowVisible.argtypes = [wintypes.HWND]
     user.IsWindowVisible.restype = wintypes.BOOL
+    user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user.IsZoomed.argtypes = [wintypes.HWND]
+    user.IsZoomed.restype = wintypes.BOOL
     user.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
     user.GetWindow.restype = wintypes.HWND
     user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -124,11 +127,19 @@ def main():
                        'EZREAD_TEST_CLOSE_DELAY_MS': '1000',
                        'NO_PROXY': '127.0.0.1,localhost', 'PYTHONIOENCODING': 'utf-8'}
         instances = []
-        for cycle in range(4):
+        crash_notes = '关闭中浏览器异常前保留的测试草稿'
+        crash_port = None
+        for cycle in range(7):
             notes = f'关闭握手保存的测试笔记 {cycle + 1}'
-            environment.update(EZREAD_TEST_CLOSE_NOTES=notes, EZREAD_TEST_CLOSE_FAIL_ONCE='1' if cycle == 0 else '0')
-            with socket.socket() as reservation:
-                reservation.bind(('127.0.0.1', 0)); port = reservation.getsockname()[1]
+            environment.update(EZREAD_TEST_CLOSE_NOTES=notes, EZREAD_TEST_CLOSE_FAIL_ONCE='1' if cycle == 0 else '0',
+                               EZREAD_TEST_CRASH_NOTES=crash_notes if cycle == 4 else '',
+                               EZREAD_TEST_BLOCK_CHECKPOINT='1' if cycle == 6 else '0')
+            if cycle == 5:
+                port = crash_port  # Production reopens at the same localStorage origin.
+            else:
+                with socket.socket() as reservation:
+                    reservation.bind(('127.0.0.1', 0)); port = reservation.getsockname()[1]
+                if cycle == 4: crash_port = port
             origin = f'http://127.0.0.1:{port}'
             def request(path, body=None):
                 raw = json.dumps(body).encode() if body is not None else None
@@ -183,8 +194,55 @@ def main():
                         candidates = [hwnd for hwnd in visible_windows(window.pid) if not user.GetWindow(hwnd, 4)]
                         return candidates[0] if state['ready'] and b'ready WebView2=' in content and candidates else None
                     hwnd = wait_until(ready_window, 20, 'Native page/window did not become ready.')
+                    if cycle == 1:
+                        user.ShowWindow(hwnd, 3)
+                        wait_until(lambda: user.IsZoomed(hwnd), 1, 'Test window did not maximize.')
+                    if cycle == 5:
+                        assert request('/__test/close-state')['loadedNotes'] == crash_notes, 'Reopen lost the locally preserved crash draft.'
                     browsers = [handle(pid) for pid in descendants(window.pid)]
                     assert browsers, 'Native host had no WebView2 descendants to verify.'
+                    if cycle in (4, 6):
+                        post(hwnd, 0x10)
+                        wait_until(lambda: not visible_windows(window.pid), .25, 'Crash close did not hide its window.')
+                        def checkpoint_ready():
+                            content = log_path.read_bytes()[log_size:]
+                            expected = b'close-local-drafts=True' if cycle == 4 else b'close-local-drafts=False'
+                            return expected in content and request('/__test/close-state')['attempts']
+                        wait_until(checkpoint_ready, 2, 'Close did not preserve local drafts before saving.')
+                        # Stable handles belong only to WebView2 descendants of
+                        # this temporary native host, never to the user's apps.
+                        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+                        for pid in descendants(window.pid):
+                            target = kernel.OpenProcess(0x1 | 0x100000, False, pid)
+                            if not target: continue
+                            try: kernel.TerminateProcess(target, 1)
+                            finally: kernel.CloseHandle(target)
+                        if cycle == 6:
+                            def recovered_dialog():
+                                visible = visible_windows(window.pid)
+                                dialogs = [item for item in visible if window_class(item) == '#32770']
+                                return dialogs[0] if hwnd in visible and dialogs and request('/__test/close-state').get('readyLoads', 0) >= 2 else None
+                            dialog = wait_until(recovered_dialog, 10, 'Unconfirmed crash did not recreate a usable page before warning.')
+                            post(dialog, 0x10)
+                            wait_until(lambda: not user.IsWindowVisible(dialog), 1, 'Recovery warning did not close.')
+                            assert window.poll() is None and backend.poll() is None
+                            assert b'close-recovery-recreated-webview' in log_path.read_bytes()[log_size:]
+                            post(hwnd, 0x10)
+                            assert window.wait(timeout=15) == 0
+                            assert backend.wait(timeout=5) == 0
+                            assert all(exited(value) for value in browsers + handles)
+                            checks.append({'unconfirmedCrashRecreatesUsableWindow': True, 'retryCloseExits': True})
+                            continue
+                        deadline = time.perf_counter() + 15
+                        while window.poll() is None and time.perf_counter() < deadline:
+                            assert not visible_windows(window.pid), 'WebView2 crash resurrected a window or modal warning during close.'
+                            time.sleep(.005)
+                        assert window.wait(timeout=1) == 0
+                        assert backend.wait(timeout=5) == 0
+                        assert all(exited(value) for value in browsers + handles)
+                        assert b'close-with-local-drafts-after-webview-failure' in log_path.read_bytes()[log_size:]
+                        checks.append({'webviewCrashDuringCloseStaysHidden': True, 'allOwnedProcessesExited': True})
+                        continue
                     hidden_times = []
                     for attempt in range(1, 3 if cycle == 0 else 2):
                         assert user.IsWindowVisible(hwnd), 'Main window was not visible before close.'
@@ -237,6 +295,8 @@ def main():
                                    'aliveWhileSavePending': True, 'duplicateWakeStaysHidden': True,
                                    'failedSaveRestoresWindow': cycle == 0, 'allOwnedProcessesExited': True,
                                    'draftAndNotesPreserved': True, 'pendingNoteSavedAfterHide': True, 'progressInterfaceReady': True})
+                    if cycle == 5: checks[-1]['crashDraftRecoveredOnReopen'] = True
+                    if cycle == 1: checks[-1]['closedFromMaximized'] = True
                 except BaseException:
                     failure = ROOT / 'work/exit-verification-failure'
                     failure.mkdir(exist_ok=True)
@@ -251,7 +311,7 @@ def main():
                     if window and window.poll() is None: window.terminate(); window.wait(timeout=5)
                     if backend.poll() is None: backend.terminate(); backend.wait(timeout=5)
                     for value in browsers + handles: kernel.CloseHandle(value)
-        assert len(set(instances)) == 4, 'Reopen reused an old backend instance.'
+        assert len(set(instances)) == 7, 'Reopen reused an old backend instance.'
     result = {'checks': checks, 'freshBackendOnReopen': True, 'realModelCalls': 0, 'realLibraryWrites': 0}
     (ROOT / 'work/exit-verification.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False))

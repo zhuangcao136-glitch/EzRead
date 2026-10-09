@@ -30,7 +30,7 @@ if (typeof window !== "undefined" && window.ezreadDesktop && window.chrome?.webv
 
 // Invoked only by the native window's close handshake. Preserve local drafts
 // first; a network failure may leave a recoverable draft but must not discard it.
-async function ezreadPrepareDesktopClose() {
+function ezreadPersistDesktopDrafts() {
   if (typeof readerScrollActive === "function" && readerScrollActive() && !readerPersistDrafts()) return false;
   if (typeof detailNoteSaves !== "undefined") {
     for (const entry of detailNoteSaves.values()) {
@@ -38,6 +38,23 @@ async function ezreadPrepareDesktopClose() {
       if (!readerWriteLocal("notes", entry.id, { value: entry.value })) return false;
     }
   }
+  return true;
+}
+
+function ezreadDesktopDraftSnapshot() {
+  if (!ezreadPersistDesktopDrafts()) return null;
+  if (typeof preferenceSaveBusy !== "undefined" && preferenceSaveBusy) return null;
+  if (typeof pendingPreferences !== "undefined" && Object.keys(pendingPreferences).length) return null;
+  const values = {};
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (key?.startsWith("ezread-reader-")) values[key] = localStorage.getItem(key);
+  }
+  return values;
+}
+
+async function ezreadPrepareDesktopClose() {
+  if (!ezreadPersistDesktopDrafts()) return false;
   const saves = [];
   if (typeof readerCancelTranslation === "function") readerCancelTranslation();
   if (typeof readerFlushTextEditor === "function") saves.push(readerFlushTextEditor());

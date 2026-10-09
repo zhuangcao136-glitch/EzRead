@@ -215,7 +215,7 @@ internal sealed class ReaderWindow : Form
     [DllImport("user32.dll")] private static extern bool AdjustWindowRectExForDpi(ref NativeRect rect, uint style, bool menu, uint extendedStyle, uint dpi);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     private readonly ShellOptions options;
-    private readonly WebView2 view = new WebView2();
+    private WebView2 view = new WebView2();
     private readonly Panel viewport = new Panel { Dock = DockStyle.Fill };
     private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
     private readonly Icon captionIcon;
@@ -229,7 +229,7 @@ internal sealed class ReaderWindow : Form
     private bool viewportModal;
     private int viewportOffsetBeforeModal;
     private bool fittingViewport;
-    private bool ready, preparingClose, mayClose;
+    private bool ready, preparingClose, mayClose, webviewFailed;
     private readonly OwnedBackend backend;
     public int ExitCode;
     public ReaderWindow(ShellOptions value)
@@ -254,7 +254,7 @@ internal sealed class ReaderWindow : Form
         if (options.SmokeReport != null) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
         Shown += async delegate { await InitializeWebView(); };
         FormClosing += OnClosing;
-        FormClosed += delegate { if (backend != null) { try { backend.Stop(); } catch (Exception exc) { Log("backend-close: " + exc.GetType().Name); } finally { backend.Dispose(); } } };
+        FormClosed += delegate { Log("closed"); if (backend != null) { try { backend.Stop(); } catch (Exception exc) { Log("backend-close: " + exc.GetType().Name); } finally { backend.Dispose(); } } };
     }
     protected override void WndProc(ref Message message)
     {
@@ -271,13 +271,14 @@ internal sealed class ReaderWindow : Form
         if (Icon != null) SendMessage(Handle, 0x80, new IntPtr(1), Icon.Handle);
     }
     protected override bool ShowWithoutActivation { get { return options.SmokeReport != null; } }
+    private bool ClosingWindow { get { var owner = Owner as ReaderWindow; return preparingClose || mayClose || IsDisposed || Disposing || owner != null && owner.ClosingWindow; } }
     public void ActivateExisting() {
-        if (preparingClose || mayClose || IsDisposed || Disposing) return;
+        if (ClosingWindow) return;
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Show(); if (options.SmokeReport == null) Activate();
     }
     private void RequestViewportFit() {
-        if (!ready || IsDisposed) return;
+        if (!ready || ClosingWindow) return;
         viewportTimer.Stop(); viewportTimer.Start();
     }
     private Rectangle MonitorArea() {
@@ -337,7 +338,7 @@ internal sealed class ReaderWindow : Form
         catch (OverflowException) { }
     }
     private async Task FitViewport() {
-        if (!ready || IsDisposed || WindowState == FormWindowState.Minimized) return;
+        if (!ready || ClosingWindow || WindowState == FormWindowState.Minimized) return;
         if (fittingViewport) { RequestViewportFit(); return; }
         fittingViewport = true;
         try {
@@ -352,6 +353,7 @@ internal sealed class ReaderWindow : Form
                 return;
             }
             string value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify(ezreadDesktopViewportMetrics())");
+            if (ClosingWindow) return;
             var metrics = json.Deserialize<Dictionary<string, object>>(json.Deserialize<string>(value));
             bool modal = metrics.ContainsKey("dialogOpen") && Convert.ToBoolean(metrics["dialogOpen"]);
             if (modal != viewportModal) {
@@ -369,14 +371,17 @@ internal sealed class ReaderWindow : Form
                 // the WebView beyond this window; normal resizes keep its zoom.
                 view.Size = new Size(ViewportViewWidth(), pageHeight);
                 await Task.Delay(75);
+                if (ClosingWindow) return;
                 for (int attempt = 0; attempt < 4; attempt++) {
                     value = await view.CoreWebView2.ExecuteScriptAsync("JSON.stringify(ezreadDesktopViewportMetrics())");
+                    if (ClosingWindow) return;
                     metrics = json.Deserialize<Dictionary<string, object>>(json.Deserialize<string>(value));
                     gutter = Convert.ToDouble(metrics["gutter"]);
                     double target = Math.Max(.25, Math.Min(5, Math.Max(fullWidth, fullHeight) / deviceScale / (LayoutWidth + gutter)));
                     if (Math.Abs(target - view.ZoomFactor) <= .0001) break;
                     view.ZoomFactor = target;
                     await Task.Delay(75);
+                    if (ClosingWindow) return;
                 }
                 fittedMonitorArea = area; fittedDeviceScale = deviceScale;
             }
@@ -394,7 +399,7 @@ internal sealed class ReaderWindow : Form
         } catch (Exception exc) { Log("viewport-fit: " + exc.GetType().Name); }
         finally { fittingViewport = false; }
     }
-    private async Task InitializeWebView()
+    private async Task InitializeWebView(bool recovering = false)
     {
         try {
             Log("initializing");
@@ -402,11 +407,15 @@ internal sealed class ReaderWindow : Form
                 try { await Task.Run((Action)backend.Capture); }
                 catch { if (options.SmokeReport == null) throw; }
             }
+            if (ClosingWindow && !recovering) return;
             CoreWebView2Environment.GetAvailableBrowserVersionString();
             Log("runtime-detected");
             var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(options.Data, "webview2-profile"));
+            if (ClosingWindow && !recovering) return;
             Log("environment-created");
             await view.EnsureCoreWebView2Async(environment);
+            if (ClosingWindow && !recovering) return;
+            webviewFailed = false;
             Log("control-created");
             var core = view.CoreWebView2;
             core.Settings.AreDefaultContextMenusEnabled = true;
@@ -417,6 +426,7 @@ internal sealed class ReaderWindow : Form
             core.Settings.AreDevToolsEnabled = false;
             // No remote debugging port, host objects, or certificate overrides.
             await core.AddScriptToExecuteOnDocumentCreatedAsync(MigrationScript());
+            if (ClosingWindow && !recovering) return;
             if (options.SmokeReport != null) await core.AddScriptToExecuteOnDocumentCreatedAsync("(()=>{window.__ezreadSmokeErrors=[];window.addEventListener('error',e=>window.__ezreadSmokeErrors.push(e.message));window.addEventListener('unhandledrejection',e=>window.__ezreadSmokeErrors.push(String(e.reason)));document.addEventListener('DOMContentLoaded',()=>new MutationObserver(changes=>{for(const change of changes)for(const node of change.addedNodes)if(node.classList?.contains('error'))window.__ezreadSmokeErrors.push(node.textContent);}).observe(document.querySelector('#toasts'),{childList:true}),{once:true});})();");
             if (!options.Child) {
                 core.WebMessageReceived += delegate(object sender, CoreWebView2WebMessageReceivedEventArgs e) {
@@ -434,7 +444,7 @@ internal sealed class ReaderWindow : Form
             };
             core.NewWindowRequested += delegate(object sender, CoreWebView2NewWindowRequestedEventArgs e) {
                 e.Handled = true;
-                if (!e.IsUserInitiated) return;
+                if (!e.IsUserInitiated || ClosingWindow) return;
                 if (!options.IsLocal(e.Uri)) { OpenExternal(e.Uri); return; }
                 var childOptions = new ShellOptions { Root = options.Root, Data = options.Data, Origin = options.Origin, Url = e.Uri, Child = true };
                 var child = new ReaderWindow(childOptions);
@@ -442,6 +452,7 @@ internal sealed class ReaderWindow : Form
             };
             core.DownloadStarting += delegate(object sender, CoreWebView2DownloadStartingEventArgs e) {
                 e.Handled = true;
+                if (ClosingWindow) { e.Cancel = true; return; }
                 using (var dialog = new SaveFileDialog()) {
                     dialog.FileName = Path.GetFileName(e.ResultFilePath);
                     dialog.OverwritePrompt = true; dialog.RestoreDirectory = true;
@@ -449,8 +460,14 @@ internal sealed class ReaderWindow : Form
                     e.ResultFilePath = dialog.FileName;
                 }
             };
-            core.ProcessFailed += delegate { ready = false; Log("webview-process-failed"); MessageBox.Show(this, "阅读窗口遇到问题，请关闭后重新打开。已保存的论文和草稿会保留。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning); };
+            core.ProcessFailed += delegate(object sender, CoreWebView2ProcessFailedEventArgs e) {
+                ready = false; webviewFailed = true;
+                Log("webview-process-failed kind=" + e.ProcessFailedKind + " closing=" + ClosingWindow);
+                if (ClosingWindow) return;
+                ShowWarning("阅读窗口遇到问题，请关闭后重新打开。已保存的论文和草稿会保留。", MessageBoxIcon.Warning);
+            };
             core.NavigationCompleted += async delegate(object sender, CoreWebView2NavigationCompletedEventArgs e) {
+                if (ClosingWindow && !recovering) return;
                 ready = e.IsSuccess;
                 if (!e.IsSuccess) { Log("navigation-failed: " + e.WebErrorStatus); return; }
                 Log("ready WebView2=" + environment.BrowserVersionString);
@@ -459,13 +476,14 @@ internal sealed class ReaderWindow : Form
             };
             core.Navigate(options.Url);
         } catch (Exception exc) {
+            if (recovering) throw;
+            if (ClosingWindow) { Log("initialization-cancelled: " + exc.GetType().Name); return; }
             ExitCode = 1; Log(exc.ToString());
             if (options.SmokeReport != null) {
                 File.WriteAllText(options.SmokeReport, json.Serialize(new { error = exc.ToString() }), Encoding.UTF8);
                 mayClose = true; Close(); return;
             }
-            MessageBox.Show(this, "桌面窗口初始化失败：\n" + exc.Message + "\n如提示缺少运行时，请安装 Microsoft Edge WebView2 Runtime。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            mayClose = true; Close();
+            ShowWarning("桌面窗口初始化失败：\n" + exc.Message + "\n如提示缺少运行时，请安装 Microsoft Edge WebView2 Runtime。", MessageBoxIcon.Error, true);
         }
     }
     private string MigrationScript()
@@ -477,7 +495,42 @@ internal sealed class ReaderWindow : Form
             var bytes = new FileInfo(path).Length;
             if (bytes <= 2 * 1024 * 1024) payload = json.Serialize(json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)));
         }
-        return "(()=>{if(location.origin!==" + json.Serialize(options.Origin.GetLeftPart(UriPartial.Authority)) + "||window.top!==window)return;window.ezreadDesktop=true;try{const mark='ezread-webview2-migrated';if(localStorage.getItem(mark)||" + (hasSnapshot ? "false" : "true") + ")return;const values=" + payload + ";for(const [key,value] of Object.entries(values)){if((key.startsWith('ezread-')||key.startsWith('readx-')||key==='tudu-sort')&&typeof value==='string'&&localStorage.getItem(key)===null)localStorage.setItem(key,value);}localStorage.setItem(mark,'1');}catch{}})();";
+        string recovery = "null";
+        try {
+            if (File.Exists(CloseDraftFile) && new FileInfo(CloseDraftFile).Length <= 8 * 1024 * 1024)
+                recovery = json.Serialize(json.DeserializeObject(File.ReadAllText(CloseDraftFile, Encoding.UTF8)));
+        } catch (Exception exc) { Log("close-drafts-read: " + exc.GetType().Name); }
+        return "(()=>{if(location.origin!==" + json.Serialize(options.Origin.GetLeftPart(UriPartial.Authority)) + "||window.top!==window)return;window.ezreadDesktop=true;try{const mark='ezread-webview2-migrated';if(!localStorage.getItem(mark)&&" + (hasSnapshot ? "true" : "false") + "){const values=" + payload + ";for(const [key,value] of Object.entries(values)){if((key.startsWith('ezread-')||key.startsWith('readx-')||key==='tudu-sort')&&typeof value==='string'&&localStorage.getItem(key)===null)localStorage.setItem(key,value);}localStorage.setItem(mark,'1');}const snapshot=" + recovery + ";if(snapshot?.origin===location.origin&&typeof snapshot.id==='string'&&localStorage.getItem('ezread-close-drafts-id')!==snapshot.id){for(const [key,value] of Object.entries(snapshot.values||{}))if(key.startsWith('ezread-reader-')&&typeof value==='string')localStorage.setItem(key,value);localStorage.setItem('ezread-close-drafts-id',snapshot.id);}}catch{}})();";
+    }
+    private string CloseDraftFile { get { return Path.Combine(options.Data, "desktop-close-drafts.json"); } }
+    private async Task<bool> CaptureCloseDrafts() {
+        string raw = await view.CoreWebView2.ExecuteScriptAsync("typeof ezreadDesktopDraftSnapshot==='function'?ezreadDesktopDraftSnapshot():null");
+        var values = json.Deserialize<Dictionary<string, string>>(raw);
+        if (values == null) return false;
+        string id = Guid.NewGuid().ToString();
+        var bytes = Encoding.UTF8.GetBytes(json.Serialize(new { id = id, origin = options.Origin.GetLeftPart(UriPartial.Authority), values = values }));
+        if (bytes.Length > 8 * 1024 * 1024) return false;
+        using (var stream = new FileStream(CloseDraftFile + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+        if (File.Exists(CloseDraftFile)) File.Replace(CloseDraftFile + ".tmp", CloseDraftFile, null); else File.Move(CloseDraftFile + ".tmp", CloseDraftFile);
+        // A cancelled close may be followed by a page reload. Do not replay
+        // this snapshot over newer edits in the still-running browser.
+        try { await view.CoreWebView2.ExecuteScriptAsync("localStorage.setItem('ezread-close-drafts-id'," + json.Serialize(id) + ")"); }
+        catch (Exception exc) { Log("close-drafts-marker: " + exc.GetType().Name); }
+        return true;
+    }
+    private void ClearCloseDrafts() {
+        try { if (!options.Child && File.Exists(CloseDraftFile)) File.Delete(CloseDraftFile); }
+        catch (Exception exc) { Log("close-drafts-clear: " + exc.GetType().Name); }
+    }
+    private void ShowWarning(string message, MessageBoxIcon icon, bool closeAfter = false) {
+        // WebView2 disallows nested modal loops inside its callbacks, including
+        // ExecuteScriptAsync continuations. Post after the callback returns.
+        if (ClosingWindow || !IsHandleCreated) return;
+        BeginInvoke((Action)delegate {
+            if (ClosingWindow) return;
+            MessageBox.Show(this, message, "EzRead", MessageBoxButtons.OK, icon);
+            if (closeAfter && !IsDisposed) { mayClose = true; Close(); }
+        });
     }
     private void OpenExternal(string url) {
         Uri target;
@@ -494,38 +547,75 @@ internal sealed class ReaderWindow : Form
         e.Cancel = true;
         if (preparingClose) return;
         preparingClose = true;
+        bool localDraftsSaved = false;
+        Log("close-request");
         var visibleWindows = new List<Form>();
         if (Visible) visibleWindows.Add(this);
         foreach (var child in OwnedForms) if (child.Visible) visibleWindows.Add(child);
         try {
-            SaveBounds();
-            // Keep the WebView alive for its save acknowledgement, but remove
-            // native windows immediately. Backend cleanup finishes while hidden.
-            Hide();
-            foreach (var child in visibleWindows) if (child != this) child.Hide();
-            // ExecuteScriptAsync does not await JavaScript Promises. Use a small
-            // explicit acknowledgement and poll it while the UI stays responsive.
-            if (ready) {
-            string request = json.Serialize(Guid.NewGuid().ToString());
-            await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult=null;window.__ezreadCloseRequest=" + request + ";(async()=>{let result=false;try{result=typeof ezreadPrepareDesktopClose==='function'?await ezreadPrepareDesktopClose():true;}catch{}if(window.__ezreadCloseRequest===" + request + ")window.__ezreadCloseResult=result;})();");
-            string answer = "null";
-            for (int attempt = 0; attempt < 80 && answer == "null"; attempt++) {
-                await Task.Delay(100);
-                answer = await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult");
-            }
-            if (answer != "true") {
+            Exception closeError = null;
+            try {
+                SaveBounds();
+                // Keep the WebView alive for its save acknowledgement, but remove
+                // native windows immediately. Backend cleanup finishes while hidden.
+                Hide();
+                viewportTimer.Stop();
+                foreach (var child in visibleWindows) if (child != this) child.Hide();
+                // ExecuteScriptAsync does not await JavaScript Promises. Use a small
+                // explicit acknowledgement and poll it while the UI stays responsive.
+                if (ready) {
+                    // Capture recoverable edits before awaiting network saves. If the
+                    // renderer dies afterwards, closing must not resurrect a dead view.
+                    if (!options.Child) localDraftsSaved = await CaptureCloseDrafts();
+                    Log("close-local-drafts=" + localDraftsSaved);
+                    string request = json.Serialize(Guid.NewGuid().ToString());
+                    await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult=null;window.__ezreadCloseRequest=" + request + ";(async()=>{let result=false;try{result=typeof ezreadPrepareDesktopClose==='function'?await ezreadPrepareDesktopClose():true;}catch{}if(window.__ezreadCloseRequest===" + request + ")window.__ezreadCloseResult=result;})();");
+                    string answer = "null";
+                    for (int attempt = 0; attempt < 80 && answer == "null"; attempt++) {
+                        await Task.Delay(100);
+                        answer = await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult");
+                    }
+                    if (answer != "true") {
+                        if (webviewFailed) throw new InvalidOperationException("WebView2 exited during close saving.");
+                        Log("close-save-unconfirmed result=" + answer);
+                        RestoreClosingWindows(visibleWindows);
+                        ShowWarning("仍有内容未能保存，窗口暂未关闭。请确认草稿已保存后重试。", MessageBoxIcon.Warning);
+                        return;
+                    }
+                    Log("close-save-confirmed");
+                    ClearCloseDrafts();
+                }
+                if (backend != null) await Task.Run((Action)backend.Stop);
+                mayClose = true; Close();
+            } catch (Exception exc) { closeError = exc; }
+            if (closeError == null) return;
+            Log("close-save: " + closeError.GetType().Name);
+            if (webviewFailed && localDraftsSaved) {
+                Log("close-with-local-drafts-after-webview-failure");
+                if (backend != null) { try { await Task.Run((Action)backend.Stop); } catch (Exception stop) { Log("backend-close: " + stop.GetType().Name); } }
+                mayClose = true; Close();
+            } else {
+                mayClose = false;
+                if (webviewFailed) {
+                    try {
+                        viewport.Controls.Remove(view); view.Dispose();
+                        view = new WebView2 { Location = Point.Empty, DefaultBackgroundColor = BackColor, Size = viewport.ClientSize };
+                        viewport.Controls.Add(view);
+                        await InitializeWebView(true);
+                        Log("close-recovery-recreated-webview");
+                    } catch (Exception recovery) { Log("close-recovery: " + recovery.GetType().Name); }
+                }
                 RestoreClosingWindows(visibleWindows);
-                MessageBox.Show(this, "仍有内容未能保存，窗口暂未关闭。请确认草稿已保存后重试。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                ShowWarning("无法完成关闭，窗口已恢复，请稍后重试。", MessageBoxIcon.Warning);
             }
-            }
-            if (backend != null) await Task.Run((Action)backend.Stop);
-            mayClose = true; Close();
-        } catch (Exception exc) { mayClose = false; Log("close-save: " + exc.GetType().Name); RestoreClosingWindows(visibleWindows); MessageBox.Show(this, "无法完成关闭，窗口已恢复，请稍后重试。", "EzRead", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        }
         finally { preparingClose = false; }
     }
     private void RestoreClosingWindows(List<Form> windows) {
+        Log("close-restored");
         foreach (var window in windows) if (!window.IsDisposed && !window.Disposing) window.Show();
+        preparingClose = false;
+        RequestViewportFit();
         if (Visible && options.SmokeReport == null) Activate();
     }
     private void RestoreBoundsFromDisk() {
@@ -692,7 +782,7 @@ internal sealed class ReaderWindow : Form
         File.WriteAllText(options.SmokeReport, json.Serialize(report), Encoding.UTF8);
         Close();
     }
-    private void Log(string message) { try { Directory.CreateDirectory(options.Data); File.AppendAllText(Path.Combine(options.Data, "desktop.log"), DateTime.Now.ToString("s") + " " + message + Environment.NewLine, Encoding.UTF8); } catch { } }
+    private void Log(string message) { try { Directory.CreateDirectory(options.Data); File.AppendAllText(Path.Combine(options.Data, "desktop.log"), DateTime.Now.ToString("s") + " pid=" + Process.GetCurrentProcess().Id + " child=" + options.Child + " " + message + Environment.NewLine, Encoding.UTF8); } catch { } }
     protected override void Dispose(bool disposing) {
         if (disposing) { viewportTimer.Dispose(); view.Dispose(); if (Icon != null) Icon.Dispose(); if (captionIcon != null) captionIcon.Dispose(); }
         base.Dispose(disposing);
