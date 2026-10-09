@@ -17,14 +17,14 @@ using Microsoft.Web.WebView2.WinForms;
 
 internal sealed class ShellOptions
 {
-    public string Root, Data, Url, SmokeReport;
+    public string Root, Data, Url, SmokeReport, VerificationSession, AppId;
     public bool Child;
     public Uri Origin;
     public static ShellOptions Parse(string[] args)
     {
         var values = new Dictionary<string, string>();
         for (int i = 0; i < args.Length; i += 2) {
-            if (i + 1 >= args.Length || (args[i] != "--app-root" && args[i] != "--data-dir" && args[i] != "--url" && args[i] != "--smoke-test"))
+            if (i + 1 >= args.Length || (args[i] != "--app-root" && args[i] != "--data-dir" && args[i] != "--url" && args[i] != "--smoke-test" && args[i] != "--verification-session"))
                 throw new ArgumentException("Invalid desktop startup arguments.");
             values.Add(args[i], args[i + 1]);
         }
@@ -36,6 +36,11 @@ internal sealed class ShellOptions
         if (result.Origin.Scheme != "http" || result.Origin.Host != "127.0.0.1" || !String.IsNullOrEmpty(result.Origin.UserInfo))
             throw new ArgumentException("EzRead only loads its local loopback service.");
         if (values.ContainsKey("--smoke-test")) result.SmokeReport = Path.GetFullPath(values["--smoke-test"]);
+        if (values.ContainsKey("--verification-session")) {
+            Guid session;
+            if (!Guid.TryParse(values["--verification-session"], out session)) throw new ArgumentException("Invalid verification session.");
+            result.VerificationSession = session.ToString("N");
+        }
         return result;
     }
     public bool IsLocal(string url) {
@@ -56,9 +61,11 @@ internal static class Program
         try {
             if (args.Length == 0) return BootstrapLauncher();
             var options = ShellOptions.Parse(args);
-            SetCurrentProcessExplicitAppUserModelID("EzRead.Desktop");
             string identity;
             using (var hash = SHA256.Create()) identity = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(options.Root.ToUpperInvariant() + "|" + options.Data.ToUpperInvariant() + "|" + options.Origin.GetLeftPart(UriPartial.Authority)))).Replace("-", "").Substring(0, 24);
+            options.AppId = options.VerificationSession != null || options.SmokeReport != null
+                ? "EzRead.Desktop.Verification." + (options.VerificationSession ?? identity) : "EzRead.Desktop";
+            Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID(options.AppId));
             using (var mutex = new Mutex(false, "Local\\EzRead.Desktop." + identity))
             using (var wake = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\EzRead.Desktop.Wake." + identity)) {
                 bool owned;
@@ -145,6 +152,28 @@ internal static class NativeProcessLifetime
         }
         // Keep this handle until process exit. Closing it early also kills us.
         job = handle;
+    }
+}
+
+internal static class NativeTaskbar
+{
+    [ComImport, Guid("56FDF342-FD6D-11D0-958A-006097C9A090"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITaskbarList {
+        [PreserveSig] int HrInit();
+        [PreserveSig] int AddTab(IntPtr window);
+        [PreserveSig] int DeleteTab(IntPtr window);
+        [PreserveSig] int ActivateTab(IntPtr window);
+        [PreserveSig] int SetActiveAlt(IntPtr window);
+    }
+    [ComImport, Guid("56FDF344-FD6D-11D0-958A-006097C9A090")]
+    private class TaskbarList { }
+    public static int SetVisible(IntPtr window, bool visible) {
+        ITaskbarList taskbar = null;
+        try {
+            taskbar = (ITaskbarList)new TaskbarList();
+            int result = taskbar.HrInit();
+            return result < 0 ? result : visible ? taskbar.AddTab(window) : taskbar.DeleteTab(window);
+        } finally { if (taskbar != null) Marshal.FinalReleaseComObject(taskbar); }
     }
 }
 
@@ -251,10 +280,12 @@ internal sealed class ReaderWindow : Form
         viewport.SizeChanged += delegate { RequestViewportFit(); };
         LocationChanged += delegate { if (options.SmokeReport == null) RequestViewportFit(); };
         viewportTimer.Tick += async delegate { viewportTimer.Stop(); await FitViewport(); };
-        if (options.SmokeReport != null) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
+        if (options.SmokeReport != null || options.VerificationSession != null) ShowInTaskbar = false;
+        if (options.SmokeReport != null) { StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
+        Log("window-mode app-id=" + options.AppId + " taskbar=" + ShowInTaskbar);
         Shown += async delegate { await InitializeWebView(); };
         FormClosing += OnClosing;
-        FormClosed += delegate { Log("closed"); if (backend != null) { try { backend.Stop(); } catch (Exception exc) { Log("backend-close: " + exc.GetType().Name); } finally { backend.Dispose(); } } };
+        FormClosed += delegate { RemoveOwnTaskbarButton(); Log("closed"); if (backend != null) { try { backend.Stop(); } catch (Exception exc) { Log("backend-close: " + exc.GetType().Name); } finally { backend.Dispose(); } } };
     }
     protected override void WndProc(ref Message message)
     {
@@ -270,7 +301,7 @@ internal sealed class ReaderWindow : Form
         if (captionIcon != null) SendMessage(Handle, 0x80, IntPtr.Zero, captionIcon.Handle);
         if (Icon != null) SendMessage(Handle, 0x80, new IntPtr(1), Icon.Handle);
     }
-    protected override bool ShowWithoutActivation { get { return options.SmokeReport != null; } }
+    protected override bool ShowWithoutActivation { get { return options.SmokeReport != null || options.VerificationSession != null; } }
     private bool ClosingWindow { get { var owner = Owner as ReaderWindow; return preparingClose || mayClose || IsDisposed || Disposing || owner != null && owner.ClosingWindow; } }
     public void ActivateExisting() {
         if (ClosingWindow) return;
@@ -446,7 +477,7 @@ internal sealed class ReaderWindow : Form
                 e.Handled = true;
                 if (!e.IsUserInitiated || ClosingWindow) return;
                 if (!options.IsLocal(e.Uri)) { OpenExternal(e.Uri); return; }
-                var childOptions = new ShellOptions { Root = options.Root, Data = options.Data, Origin = options.Origin, Url = e.Uri, Child = true };
+                var childOptions = new ShellOptions { Root = options.Root, Data = options.Data, Origin = options.Origin, Url = e.Uri, Child = true, VerificationSession = options.VerificationSession, AppId = options.AppId };
                 var child = new ReaderWindow(childOptions);
                 child.Show(this);
             };
@@ -538,6 +569,11 @@ internal sealed class ReaderWindow : Form
         try { Process.Start(new ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true }); }
         catch (Exception exc) { Log("external-link: " + exc.GetType().Name); }
     }
+    private void RemoveOwnTaskbarButton() {
+        if (options.Child || !IsHandleCreated || IsDisposed) return;
+        try { Log("taskbar-remove hwnd=" + Handle.ToInt64() + " hr=" + NativeTaskbar.SetVisible(Handle, false)); }
+        catch (Exception exc) { Log("taskbar-remove: " + exc.GetType().Name); }
+    }
     private async void OnClosing(object sender, FormClosingEventArgs e)
     {
         if (mayClose) return;
@@ -559,6 +595,7 @@ internal sealed class ReaderWindow : Form
                 // Keep the WebView alive for its save acknowledgement, but remove
                 // native windows immediately. Backend cleanup finishes while hidden.
                 Hide();
+                RemoveOwnTaskbarButton();
                 viewportTimer.Stop();
                 foreach (var child in visibleWindows) if (child != this) child.Hide();
                 // ExecuteScriptAsync does not await JavaScript Promises. Use a small
@@ -614,6 +651,10 @@ internal sealed class ReaderWindow : Form
     private void RestoreClosingWindows(List<Form> windows) {
         Log("close-restored");
         foreach (var window in windows) if (!window.IsDisposed && !window.Disposing) window.Show();
+        if (!options.Child && ShowInTaskbar && IsHandleCreated) {
+            try { Log("taskbar-restore hwnd=" + Handle.ToInt64() + " hr=" + NativeTaskbar.SetVisible(Handle, true)); }
+            catch (Exception exc) { Log("taskbar-restore: " + exc.GetType().Name); }
+        }
         preparingClose = false;
         RequestViewportFit();
         if (Visible && options.SmokeReport == null) Activate();

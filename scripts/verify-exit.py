@@ -15,6 +15,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,6 +45,8 @@ def main():
     user.IsZoomed.restype = wintypes.BOOL
     user.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
     user.GetWindow.restype = wintypes.HWND
+    user.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user.GetWindowLongW.restype = ctypes.c_long
     user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user.EnumChildWindows.argtypes = [wintypes.HWND, window_callback, wintypes.LPARAM]
     user.GetDlgCtrlID.argtypes = [wintypes.HWND]
@@ -129,6 +132,7 @@ def main():
         instances = []
         crash_notes = '关闭中浏览器异常前保留的测试草稿'
         crash_port = None
+        verification_session = uuid.uuid4().hex
         for cycle in range(7):
             notes = f'关闭握手保存的测试笔记 {cycle + 1}'
             environment.update(EZREAD_TEST_CLOSE_NOTES=notes, EZREAD_TEST_CLOSE_FAIL_ONCE='1' if cycle == 0 else '0',
@@ -169,7 +173,8 @@ def main():
                         continue
                     log_path = data / 'desktop.log'
                     log_size = log_path.stat().st_size if log_path.exists() else 0
-                    command = [str(native_executable), '--app-root', str(app_root), '--data-dir', str(data), '--url', origin]
+                    command = [str(native_executable), '--app-root', str(app_root), '--data-dir', str(data), '--url', origin,
+                               '--verification-session', verification_session]
                     window = subprocess.Popen(command, cwd=ROOT,
                                               creationflags=subprocess.CREATE_NO_WINDOW)
                     if cycle == 3:
@@ -191,9 +196,16 @@ def main():
                         if window.poll() is not None: raise RuntimeError('Native host exited before close verification.')
                         content = log_path.read_bytes()[log_size:] if log_path.exists() else b''
                         state = request('/__test/close-state')
-                        candidates = [hwnd for hwnd in visible_windows(window.pid) if not user.GetWindow(hwnd, 4)]
+                        # ShowInTaskbar=False gives the form a hidden WinForms
+                        # owner. Select the visible form rather than an unowned
+                        # HWND, which would exclude our isolated test window.
+                        candidates = [hwnd for hwnd in visible_windows(window.pid) if window_class(hwnd).startswith('WindowsForms10.Window.')]
+                        assert len(candidates) <= 1, 'Temporary host exposed multiple main forms.'
                         return candidates[0] if state['ready'] and b'ready WebView2=' in content and candidates else None
                     hwnd = wait_until(ready_window, 20, 'Native page/window did not become ready.')
+                    mode = log_path.read_bytes()[log_size:]
+                    assert ('window-mode app-id=EzRead.Desktop.Verification.' + verification_session + ' taskbar=False').encode() in mode
+                    assert not user.GetWindowLongW(hwnd, -20) & 0x40000, 'Verification HWND has WS_EX_APPWINDOW.'
                     if cycle == 1:
                         user.ShowWindow(hwnd, 3)
                         wait_until(lambda: user.IsZoomed(hwnd), 1, 'Test window did not maximize.')
@@ -291,10 +303,13 @@ def main():
                     assert doc['translation']['status'] == 'paused'
                     assert doc['translation']['staging']['one'] == '已保留的测试重译草稿'
                     assert (data / 'desktop-window.json').is_file(), 'Close did not preserve native window bounds.'
+                    taskbar = [line for line in log_path.read_text(encoding='utf-8-sig').splitlines() if f'pid={window.pid} ' in line and 'taskbar-remove hwnd=' in line]
+                    assert taskbar and all(line.endswith(' hr=0') for line in taskbar), 'Own taskbar button cleanup failed.'
                     checks.append({'cycle': cycle + 1, 'backendPid': backend.pid, 'hiddenWithinMs': hidden_times,
                                    'aliveWhileSavePending': True, 'duplicateWakeStaysHidden': True,
                                    'failedSaveRestoresWindow': cycle == 0, 'allOwnedProcessesExited': True,
-                                   'draftAndNotesPreserved': True, 'pendingNoteSavedAfterHide': True, 'progressInterfaceReady': True})
+                                   'draftAndNotesPreserved': True, 'pendingNoteSavedAfterHide': True, 'progressInterfaceReady': True,
+                                   'isolatedTaskbarIdentity': True, 'explicitTaskbarRemovalSucceeded': True})
                     if cycle == 5: checks[-1]['crashDraftRecoveredOnReopen'] = True
                     if cycle == 1: checks[-1]['closedFromMaximized'] = True
                 except BaseException:
