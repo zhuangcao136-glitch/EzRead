@@ -42,6 +42,8 @@ CLOSE_FAIL_ONCE = os.environ.get('EZREAD_TEST_CLOSE_FAIL_ONCE') == '1'
 CLOSE_NOTES = os.environ.get('EZREAD_TEST_CLOSE_NOTES', '关闭握手保存的测试笔记')
 CLOSE_CRASH_NOTES = os.environ.get('EZREAD_TEST_CRASH_NOTES', '')
 CLOSE_BLOCK_CHECKPOINT = os.environ.get('EZREAD_TEST_BLOCK_CHECKPOINT') == '1'
+CLOSE_TIMEOUT = os.environ.get('EZREAD_TEST_CLOSE_TIMEOUT', '')
+RELOAD_AFTER_READY = os.environ.get('EZREAD_TEST_RELOAD_AFTER_READY') == '1'
 CLOSE_STATE = {'ready': False, 'attempts': []}
 CLOSE_LOCK = threading.Lock()
 
@@ -60,6 +62,7 @@ def close_script():
   };
   ezreadPrepareDesktopClose = async function() {
     const probe = await send('close-start', {});
+    if (__TIMEOUT_MODE__ === 'save' && probe.attempt === 1) await new Promise(() => {});
     await new Promise(resolve => setTimeout(resolve, probe.delay));
     const textarea = document.querySelector('.notes-area');
     textarea.value = probe.notes;
@@ -71,6 +74,14 @@ def close_script():
     await send('close-done', { attempt: probe.attempt, saved, result });
     return result;
   };
+  if (__TIMEOUT_MODE__ === 'draft') {
+    const snapshot = ezreadDesktopDraftSnapshot;
+    let first = true;
+    ezreadDesktopDraftSnapshot = function() {
+      if (first) { first = false; const until = Date.now() + 4500; while (Date.now() < until) {} }
+      return snapshot();
+    };
+  }
   window.addEventListener('load', async () => {
     while (state.loading || !state.papers.some(p => p.id === '0123456789abcdef')) {
       await new Promise(resolve => setTimeout(resolve, 25));
@@ -84,10 +95,11 @@ def close_script():
       clearTimeout(detailNoteSaves.get('0123456789abcdef').timer);
     }
     if (__BLOCK_CHECKPOINT__) preferenceSaveBusy = true;
-    await send('ready', { notes: textarea.value });
+    const ready = await send('ready', { notes: textarea.value });
+    if (ready.reload) setTimeout(() => location.reload(), 700);
   }, { once: true });
 })();
-'''.replace('__CRASH_NOTES__', json.dumps(CLOSE_CRASH_NOTES)).replace('__BLOCK_CHECKPOINT__',
+'''.replace('__TIMEOUT_MODE__', json.dumps(CLOSE_TIMEOUT)).replace('__CRASH_NOTES__', json.dumps(CLOSE_CRASH_NOTES)).replace('__BLOCK_CHECKPOINT__',
     json.dumps(CLOSE_BLOCK_CHECKPOINT and not CLOSE_STATE.get('readyLoads')))
 
 
@@ -115,6 +127,9 @@ class Handler(OriginalHandler):
         super().do_GET()
     def do_POST(self):
         path = self.path.split('?', 1)[0]
+        if path == '/api/shutdown' and CLOSE_TIMEOUT == 'backend':
+            time.sleep(60)
+            return
         if path in ('/__test/ready', '/__test/close-start', '/__test/close-done'):
             body = self.read_json()
             with CLOSE_LOCK:
@@ -122,7 +137,7 @@ class Handler(OriginalHandler):
                     CLOSE_STATE['ready'] = True
                     CLOSE_STATE['readyLoads'] = CLOSE_STATE.get('readyLoads', 0) + 1
                     CLOSE_STATE['loadedNotes'] = body.get('notes')
-                    answer = {}
+                    answer = {'reload': RELOAD_AFTER_READY and CLOSE_STATE['readyLoads'] == 1}
                 elif path == '/__test/close-start':
                     attempt = len(CLOSE_STATE['attempts']) + 1
                     notes = f'{CLOSE_NOTES}，第 {attempt} 次'

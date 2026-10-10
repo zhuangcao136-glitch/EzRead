@@ -17,10 +17,14 @@ def shell_command(root, directory, url):
     return [str(executable), '--app-root', str(root), '--data-dir', str(directory), '--url', url]
 
 
-def open_desktop(root, directory, url):
+def open_desktop(root, directory, url, startup_report=None, verification_session=None):
     if os.name != 'nt':
         raise RuntimeError('此桌面启动器目前支持 Windows；其他系统可运行 server.py 并在浏览器阅读。')
     command = shell_command(root, directory, url)
+    if startup_report is not None:
+        command += ['--startup-report', str(startup_report)]
+    if verification_session is not None:
+        command += ['--verification-session', verification_session]
     from browser_state import prepare_migration
     try:
         prepare_migration(directory, url.rstrip('/'))

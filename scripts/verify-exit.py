@@ -133,11 +133,12 @@ def main():
         crash_notes = '关闭中浏览器异常前保留的测试草稿'
         crash_port = None
         verification_session = uuid.uuid4().hex
-        for cycle in range(7):
+        for cycle in range(10):
             notes = f'关闭握手保存的测试笔记 {cycle + 1}'
             environment.update(EZREAD_TEST_CLOSE_NOTES=notes, EZREAD_TEST_CLOSE_FAIL_ONCE='1' if cycle == 0 else '0',
                                EZREAD_TEST_CRASH_NOTES=crash_notes if cycle == 4 else '',
-                               EZREAD_TEST_BLOCK_CHECKPOINT='1' if cycle == 6 else '0')
+                               EZREAD_TEST_BLOCK_CHECKPOINT='1' if cycle == 6 else '0',
+                               EZREAD_TEST_CLOSE_TIMEOUT={7: 'save', 8: 'draft', 9: 'backend'}.get(cycle, ''))
             if cycle == 5:
                 port = crash_port  # Production reopens at the same localStorage origin.
             else:
@@ -150,7 +151,9 @@ def main():
                 req = urllib.request.Request(origin + path, data=raw, headers={'Content-Type': 'application/json'})
                 with opener.open(req, timeout=3) as response: return json.load(response)
             with (data / f'backend-{cycle}.log').open('w', encoding='utf-8') as log:
-                backend = subprocess.Popen([sys.executable, str(ROOT / 'tests/backend_exit_fixture.py'), '--port', str(port)],
+                # Hold the actual interpreter, not a venv redirector whose PID
+                # differs from /api/health and whose termination leaves a child.
+                backend = subprocess.Popen([getattr(sys, '_base_executable', sys.executable), str(ROOT / 'tests/backend_exit_fixture.py'), '--port', str(port)],
                                            cwd=ROOT, env=environment, stdout=log, stderr=log,
                                            creationflags=subprocess.CREATE_NO_WINDOW)
                 window = None; duplicate = None; handles = []; browsers = []
@@ -213,6 +216,42 @@ def main():
                         assert request('/__test/close-state')['loadedNotes'] == crash_notes, 'Reopen lost the locally preserved crash draft.'
                     browsers = [handle(pid) for pid in descendants(window.pid)]
                     assert browsers, 'Native host had no WebView2 descendants to verify.'
+                    if cycle in (7, 8):
+                        started = time.monotonic()
+                        post(hwnd, 0x10)
+                        wait_until(lambda: not visible_windows(window.pid), .25, 'Timeout close did not hide immediately.')
+                        def timeout_dialog():
+                            visible = visible_windows(window.pid)
+                            dialogs = [item for item in visible if window_class(item) == '#32770']
+                            return dialogs[0] if hwnd in visible and dialogs else None
+                        dialog = wait_until(timeout_dialog, 11 if cycle == 7 else 3.5, 'Timed-out close did not restore a window.')
+                        elapsed = round(time.monotonic() - started, 2)
+                        assert backend.poll() is None and window.poll() is None, 'Timeout killed unconfirmed edits.'
+                        if cycle == 8:
+                            assert not (data / 'desktop-close-drafts.json').exists(), 'Late draft read committed after timeout.'
+                        post(dialog, 0x10)
+                        wait_until(lambda: not user.IsWindowVisible(dialog), 1, 'Timeout warning did not dismiss.')
+                        if cycle == 8:
+                            time.sleep(3)  # The fixture renderer finishes its intentional 4.5s stall.
+                            assert not (data / 'desktop-close-drafts.json').exists(), 'Late script result committed a cancelled checkpoint.'
+                        post(hwnd, 0x10)
+                        assert window.wait(timeout=15) == 0 and backend.wait(timeout=5) == 0
+                        assert all(exited(value) for value in browsers + handles)
+                        checks.append({'timeoutStage': 'save-confirmation' if cycle == 7 else 'draft-read',
+                                       'restoredWithinSeconds': elapsed, 'backendPreservedBeforeRetry': True, 'retryCloseExits': True})
+                        continue
+                    if cycle == 9:
+                        started = time.monotonic()
+                        post(hwnd, 0x10)
+                        assert window.wait(timeout=16) == 0
+                        assert backend.wait(timeout=2) != 0, 'Stalled backend was not stopped at its deadline.'
+                        assert all(exited(value) for value in browsers + handles)
+                        with contextlib.closing(sqlite3.connect(data / 'library.sqlite3')) as connection:
+                            doc = json.loads(connection.execute('SELECT doc FROM papers WHERE id=?', ('0123456789abcdef',)).fetchone()[0])
+                        assert doc['notes'] == f'{notes}，第 1 次'
+                        checks.append({'timeoutStage': 'backend-exit', 'exitedWithinSeconds': round(time.monotonic() - started, 2),
+                                       'confirmedNotesPreserved': True, 'allOwnedProcessesExited': True})
+                        continue
                     if cycle in (4, 6):
                         post(hwnd, 0x10)
                         wait_until(lambda: not visible_windows(window.pid), .25, 'Crash close did not hide its window.')
@@ -286,7 +325,7 @@ def main():
                             wait_until(lambda: not user.IsWindowVisible(dialog), 1, 'Test warning did not close.')
                             assert user.IsWindowVisible(hwnd), 'Dismissing warning hid the restored window.'
                         else:
-                            assert duplicate.wait(timeout=3) == 0, 'Duplicate startup failed while closing.'
+                            assert duplicate.wait(timeout=3) == 3, 'Closing host did not explicitly defer the open request.'
                             assert window.poll() is None and backend.poll() is None, 'Save delay ended before duplicate-wake verification.'
                             assert not visible_windows(window.pid), 'Duplicate startup showed the window during close.'
                     assert window.wait(timeout=15) == 0, 'Native window did not close cleanly.'
@@ -326,7 +365,7 @@ def main():
                     if window and window.poll() is None: window.terminate(); window.wait(timeout=5)
                     if backend.poll() is None: backend.terminate(); backend.wait(timeout=5)
                     for value in browsers + handles: kernel.CloseHandle(value)
-        assert len(set(instances)) == 7, 'Reopen reused an old backend instance.'
+        assert len(set(instances)) == 10, 'Reopen reused an old backend instance.'
     result = {'checks': checks, 'freshBackendOnReopen': True, 'realModelCalls': 0, 'realLibraryWrites': 0}
     (ROOT / 'work/exit-verification.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False))

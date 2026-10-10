@@ -17,14 +17,14 @@ using Microsoft.Web.WebView2.WinForms;
 
 internal sealed class ShellOptions
 {
-    public string Root, Data, Url, SmokeReport, VerificationSession, AppId;
+    public string Root, Data, Url, SmokeReport, VerificationSession, AppId, Identity, StartupReport;
     public bool Child;
     public Uri Origin;
     public static ShellOptions Parse(string[] args)
     {
         var values = new Dictionary<string, string>();
         for (int i = 0; i < args.Length; i += 2) {
-            if (i + 1 >= args.Length || (args[i] != "--app-root" && args[i] != "--data-dir" && args[i] != "--url" && args[i] != "--smoke-test" && args[i] != "--verification-session"))
+            if (i + 1 >= args.Length || (args[i] != "--app-root" && args[i] != "--data-dir" && args[i] != "--url" && args[i] != "--smoke-test" && args[i] != "--verification-session" && args[i] != "--startup-report"))
                 throw new ArgumentException("Invalid desktop startup arguments.");
             values.Add(args[i], args[i + 1]);
         }
@@ -36,6 +36,7 @@ internal sealed class ShellOptions
         if (result.Origin.Scheme != "http" || result.Origin.Host != "127.0.0.1" || !String.IsNullOrEmpty(result.Origin.UserInfo))
             throw new ArgumentException("EzRead only loads its local loopback service.");
         if (values.ContainsKey("--smoke-test")) result.SmokeReport = Path.GetFullPath(values["--smoke-test"]);
+        if (values.ContainsKey("--startup-report")) result.StartupReport = Path.GetFullPath(values["--startup-report"]);
         if (values.ContainsKey("--verification-session")) {
             Guid session;
             if (!Guid.TryParse(values["--verification-session"], out session)) throw new ArgumentException("Invalid verification session.");
@@ -63,33 +64,24 @@ internal static class Program
             var options = ShellOptions.Parse(args);
             string identity;
             using (var hash = SHA256.Create()) identity = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(options.Root.ToUpperInvariant() + "|" + options.Data.ToUpperInvariant() + "|" + options.Origin.GetLeftPart(UriPartial.Authority)))).Replace("-", "").Substring(0, 24);
+            options.Identity = identity;
             options.AppId = options.VerificationSession != null || options.SmokeReport != null
                 ? "EzRead.Desktop.Verification." + (options.VerificationSession ?? identity) : "EzRead.Desktop";
             Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID(options.AppId));
-            using (var mutex = new Mutex(false, "Local\\EzRead.Desktop." + identity))
-            using (var wake = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\EzRead.Desktop.Wake." + identity)) {
+            using (var mutex = new Mutex(false, "Local\\EzRead.Desktop." + identity)) {
                 bool owned;
                 try { owned = mutex.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
-                if (!owned) { wake.Set(); return 0; }
+                if (!owned) return NativeOpenRequest.Deliver(identity);
                 NativeProcessLifetime.Attach();
                 try {
                     using (var form = new ReaderWindow(options)) {
-                        ThreadPool.QueueUserWorkItem(delegate {
-                            try {
-                                while (!form.IsDisposed) {
-                                    if (!wake.WaitOne(500)) continue;
-                                    if (form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke((Action)delegate {
-                                        form.ActivateExisting();
-                                    });
-                                }
-                            } catch (ObjectDisposedException) { } catch (InvalidOperationException) { }
-                        });
                         Application.Run(form);
                         return form.ExitCode;
                     }
                 } finally { mutex.ReleaseMutex(); }
             }
         } catch (Exception exc) {
+            if (Array.IndexOf(args, "--startup-report") >= 0) return 1;
             int reportIndex = Array.IndexOf(args, "--smoke-test");
             if (reportIndex >= 0 && reportIndex + 1 < args.Length) {
                 File.WriteAllText(args[reportIndex + 1], new JavaScriptSerializer().Serialize(new { error = exc.ToString() }), Encoding.UTF8);
@@ -121,6 +113,35 @@ internal static class Program
             return 0;
         }
         throw new FileNotFoundException("Python runtime not found. See README.md or set EZREAD_PYTHON.");
+    }
+}
+
+internal static class NativeOpenRequest
+{
+    private delegate bool EnumWindow(IntPtr window, IntPtr parameter);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string name);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindow callback, IntPtr parameter);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetProp(IntPtr window, string name);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool SetProp(IntPtr window, string name, IntPtr value);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr RemoveProp(IntPtr window, string name);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out UIntPtr result);
+    public static readonly uint Message = RegisterWindowMessage("EzRead.Desktop.Open.v1");
+    private static string Property(string identity) { return "EzRead.Desktop.Instance." + identity; }
+    public static void Register(IntPtr window, string identity) {
+        if (!SetProp(window, Property(identity), new IntPtr(1))) throw new InvalidOperationException("Cannot register the desktop instance.");
+    }
+    public static void Unregister(IntPtr window, string identity) { RemoveProp(window, Property(identity)); }
+    public static int Deliver(string identity) {
+        IntPtr target = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr window, IntPtr unused) {
+            if (GetProp(window, Property(identity)) == IntPtr.Zero) return true;
+            target = window; return false;
+        }, IntPtr.Zero);
+        if (target == IntPtr.Zero) return 3; // The owning instance is starting or destroying its HWND.
+        UIntPtr answer;
+        if (SendMessageTimeout(target, Message, IntPtr.Zero, IntPtr.Zero, 0x22, 2000, out answer) == IntPtr.Zero)
+            throw new TimeoutException("The existing desktop did not acknowledge the open request.");
+        return answer.ToUInt64() == 1 ? 0 : 3;
     }
 }
 
@@ -183,11 +204,14 @@ internal sealed class OwnedBackend : IDisposable
     private readonly JavaScriptSerializer json = new JavaScriptSerializer();
     private Process process;
     private string instance;
+    private bool attached;
     private readonly object gate = new object();
     public OwnedBackend(ShellOptions value) { options = value; }
-    private Dictionary<string, object> Request(string path, string body = null) {
+    private Dictionary<string, object> Request(string path, string body = null, int timeout = 2000) {
         var request = (HttpWebRequest)WebRequest.Create(new Uri(options.Origin, path));
-        request.Proxy = null; request.Timeout = 2000; request.ReadWriteTimeout = 2000;
+        request.Proxy = null; request.Timeout = timeout; request.ReadWriteTimeout = timeout;
+        // Abort covers DNS, request upload and a response body that never ends.
+        using (var timer = new System.Threading.Timer(delegate { request.Abort(); }, null, timeout, Timeout.Infinite)) {
         if (body != null) {
             var bytes = Encoding.UTF8.GetBytes(body); request.Method = "POST";
             request.ContentType = "application/json"; request.ContentLength = bytes.Length;
@@ -197,6 +221,7 @@ internal sealed class OwnedBackend : IDisposable
         using (var response = request.GetResponse())
         using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             return json.Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+        }
     }
     private static bool SamePath(object value, string expected) {
         try { return value is string && Path.IsPathRooted((string)value) && String.Equals(Path.GetFullPath((string)value).TrimEnd('\\'), Path.GetFullPath(expected).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
@@ -216,15 +241,27 @@ internal sealed class OwnedBackend : IDisposable
         }
         if (process != null) process.Dispose();
         process = candidate; instance = (string)health["instance_id"];
-        Request("/api/desktop-attach", json.Serialize(new { instance_id = instance, process_id = Process.GetCurrentProcess().Id }));
+    }
+    public void Attach() {
+        lock (gate) {
+            Request("/api/desktop-attach", json.Serialize(new { instance_id = instance, process_id = Process.GetCurrentProcess().Id }));
+            attached = true;
+        }
     }
     public void Stop() {
         lock (gate) {
+        // Until navigation succeeds this host has only borrowed the backend.
+        // A failed startup must not stop a service that was already running.
+        if (!attached) return;
         if (process != null && process.HasExited) return;
-        // Recapture a backend deliberately reloaded while this window was open.
-        try { CaptureCore(); } catch { if (process == null || process.HasExited) return; }
+        // The existing stable handle already identifies the owned backend. Do
+        // not spend the shutdown budget repeating three startup HTTP requests.
+        if (process == null) { CaptureCore(); if (process.HasExited) return; }
         try { Request("/api/shutdown", json.Serialize(new { instance_id = instance })); } catch (WebException) { }
-        if (!process.WaitForExit(10000)) { process.Kill(); process.WaitForExit(3000); }
+        if (!process.WaitForExit(7000)) {
+            process.Kill();
+            if (!process.WaitForExit(3000)) throw new TimeoutException("后台进程未能在期限内退出。");
+        }
         }
     }
     public void Dispose() { lock (gate) { if (process != null) process.Dispose(); } }
@@ -258,7 +295,7 @@ internal sealed class ReaderWindow : Form
     private bool viewportModal;
     private int viewportOffsetBeforeModal;
     private bool fittingViewport;
-    private bool ready, preparingClose, mayClose, webviewFailed;
+    private bool ready, preparingClose, mayClose, webviewFailed, startupReported;
     private readonly OwnedBackend backend;
     public int ExitCode;
     public ReaderWindow(ShellOptions value)
@@ -285,10 +322,16 @@ internal sealed class ReaderWindow : Form
         Log("window-mode app-id=" + options.AppId + " taskbar=" + ShowInTaskbar);
         Shown += async delegate { await InitializeWebView(); };
         FormClosing += OnClosing;
-        FormClosed += delegate { RemoveOwnTaskbarButton(); Log("closed"); if (backend != null) { try { backend.Stop(); } catch (Exception exc) { Log("backend-close: " + exc.GetType().Name); } finally { backend.Dispose(); } } };
+        FormClosed += delegate { RemoveOwnTaskbarButton(); Log("closed"); if (backend != null) backend.Dispose(); };
     }
     protected override void WndProc(ref Message message)
     {
+        if (message.Msg == NativeOpenRequest.Message) {
+            bool accepted = ready && !ClosingWindow;
+            if (accepted) ActivateExisting();
+            else Log("open-request-deferred");
+            message.Result = new IntPtr(accepted ? 1 : 3); return;
+        }
         // Only our own caption icon is transparent. The real large icon belongs
         // to this executable/Form and lives for the entire window lifetime.
         if (captionIcon != null && message.Msg == 0x80 && message.WParam == IntPtr.Zero) message.LParam = captionIcon.Handle;
@@ -298,8 +341,13 @@ internal sealed class ReaderWindow : Form
     }
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e);
+        if (!options.Child) NativeOpenRequest.Register(Handle, options.Identity);
         if (captionIcon != null) SendMessage(Handle, 0x80, IntPtr.Zero, captionIcon.Handle);
         if (Icon != null) SendMessage(Handle, 0x80, new IntPtr(1), Icon.Handle);
+    }
+    protected override void OnHandleDestroyed(EventArgs e) {
+        if (!options.Child) NativeOpenRequest.Unregister(Handle, options.Identity);
+        base.OnHandleDestroyed(e);
     }
     protected override bool ShowWithoutActivation { get { return options.SmokeReport != null || options.VerificationSession != null; } }
     private bool ClosingWindow { get { var owner = Owner as ReaderWindow; return preparingClose || mayClose || IsDisposed || Disposing || owner != null && owner.ClosingWindow; } }
@@ -441,7 +489,11 @@ internal sealed class ReaderWindow : Form
             if (ClosingWindow && !recovering) return;
             CoreWebView2Environment.GetAvailableBrowserVersionString();
             Log("runtime-detected");
-            var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(options.Data, "webview2-profile"));
+            string profile = Path.Combine(options.Data, "webview2-profile");
+            // Catch a blocked profile before WebView2 can show its own system dialog.
+            if (File.Exists(profile)) throw new IOException("浏览器数据目录被同名文件占用。");
+            Directory.CreateDirectory(profile);
+            var environment = await CoreWebView2Environment.CreateAsync(null, profile);
             if (ClosingWindow && !recovering) return;
             Log("environment-created");
             await view.EnsureCoreWebView2Async(environment);
@@ -477,7 +529,7 @@ internal sealed class ReaderWindow : Form
                 e.Handled = true;
                 if (!e.IsUserInitiated || ClosingWindow) return;
                 if (!options.IsLocal(e.Uri)) { OpenExternal(e.Uri); return; }
-                var childOptions = new ShellOptions { Root = options.Root, Data = options.Data, Origin = options.Origin, Url = e.Uri, Child = true, VerificationSession = options.VerificationSession, AppId = options.AppId };
+                var childOptions = new ShellOptions { Root = options.Root, Data = options.Data, Origin = options.Origin, Url = e.Uri, Child = true, VerificationSession = options.VerificationSession, AppId = options.AppId, Identity = options.Identity };
                 var child = new ReaderWindow(childOptions);
                 child.Show(this);
             };
@@ -499,23 +551,49 @@ internal sealed class ReaderWindow : Form
             };
             core.NavigationCompleted += async delegate(object sender, CoreWebView2NavigationCompletedEventArgs e) {
                 if (ClosingWindow && !recovering) return;
-                ready = e.IsSuccess;
-                if (!e.IsSuccess) { Log("navigation-failed: " + e.WebErrorStatus); return; }
-                Log("ready WebView2=" + environment.BrowserVersionString);
-                await FitViewport();
-                if (options.SmokeReport != null) await SmokeTest(environment);
+                if (!e.IsSuccess) {
+                    ready = false; Log("navigation-failed: " + e.WebErrorStatus);
+                    if (options.StartupReport != null) { ExitCode = 1; WriteStartupReport(false); Close(); }
+                    return;
+                }
+                try {
+                    if (backend != null) {
+                        try { await Task.Run((Action)backend.Attach); }
+                        catch { if (options.SmokeReport == null) throw; }
+                    }
+                    if (ClosingWindow && !recovering) return;
+                    ready = true;
+                    Log("ready WebView2=" + environment.BrowserVersionString);
+                    WriteStartupReport(true);
+                    await FitViewport();
+                    if (options.SmokeReport != null) await SmokeTest(environment);
+                } catch (Exception exc) {
+                    ExitCode = 1; Log("navigation-initialization: " + exc.GetType().Name);
+                    WriteStartupReport(false);
+                    if (options.StartupReport != null || options.SmokeReport != null) Close();
+                    else ShowWarning("阅读窗口初始化失败，请关闭后重试。", MessageBoxIcon.Error, true);
+                }
             };
             core.Navigate(options.Url);
         } catch (Exception exc) {
             if (recovering) throw;
             if (ClosingWindow) { Log("initialization-cancelled: " + exc.GetType().Name); return; }
             ExitCode = 1; Log(exc.ToString());
+            WriteStartupReport(false);
+            if (options.StartupReport != null) { Close(); return; }
             if (options.SmokeReport != null) {
                 File.WriteAllText(options.SmokeReport, json.Serialize(new { error = exc.ToString() }), Encoding.UTF8);
-                mayClose = true; Close(); return;
+                Close(); return;
             }
             ShowWarning("桌面窗口初始化失败：\n" + exc.Message + "\n如提示缺少运行时，请安装 Microsoft Edge WebView2 Runtime。", MessageBoxIcon.Error, true);
         }
+    }
+    private void WriteStartupReport(bool success) {
+        if (options.Child || options.StartupReport == null || startupReported) return;
+        string temporary = options.StartupReport + ".tmp";
+        File.WriteAllText(temporary, json.Serialize(new { ready = success, process_id = Process.GetCurrentProcess().Id }), Encoding.UTF8);
+        File.Move(temporary, options.StartupReport);
+        startupReported = true;
     }
     private string MigrationScript()
     {
@@ -534,18 +612,46 @@ internal sealed class ReaderWindow : Form
         return "(()=>{if(location.origin!==" + json.Serialize(options.Origin.GetLeftPart(UriPartial.Authority)) + "||window.top!==window)return;window.ezreadDesktop=true;try{const mark='ezread-webview2-migrated';if(!localStorage.getItem(mark)&&" + (hasSnapshot ? "true" : "false") + "){const values=" + payload + ";for(const [key,value] of Object.entries(values)){if((key.startsWith('ezread-')||key.startsWith('readx-')||key==='tudu-sort')&&typeof value==='string'&&localStorage.getItem(key)===null)localStorage.setItem(key,value);}localStorage.setItem(mark,'1');}const snapshot=" + recovery + ";if(snapshot?.origin===location.origin&&typeof snapshot.id==='string'&&localStorage.getItem('ezread-close-drafts-id')!==snapshot.id){for(const [key,value] of Object.entries(snapshot.values||{}))if(key.startsWith('ezread-reader-')&&typeof value==='string')localStorage.setItem(key,value);localStorage.setItem('ezread-close-drafts-id',snapshot.id);}}catch{}})();";
     }
     private string CloseDraftFile { get { return Path.Combine(options.Data, "desktop-close-drafts.json"); } }
+    private static void ObserveFailure(Task task) {
+        task.ContinueWith(failed => { var ignored = failed.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+    }
+    private static void DeleteAfterWrite(Task task, string path) {
+        task.ContinueWith(delegate { try { File.Delete(path); } catch { } });
+    }
+    private async Task<T> CloseStep<T>(Task<T> task, int milliseconds, string stage) {
+        if (await Task.WhenAny(task, Task.Delay(milliseconds)) != task) {
+            // A timed-out WebView operation can finish later. Observe failures;
+            // never resume a cancelled native close continuation from it.
+            ObserveFailure(task);
+            Log("close-timeout stage=" + stage);
+            throw new TimeoutException(stage);
+        }
+        return await task;
+    }
+    private Task<string> CloseScript(string script, int milliseconds, string stage) {
+        return CloseStep(view.CoreWebView2.ExecuteScriptAsync(script), milliseconds, stage);
+    }
     private async Task<bool> CaptureCloseDrafts() {
-        string raw = await view.CoreWebView2.ExecuteScriptAsync("typeof ezreadDesktopDraftSnapshot==='function'?ezreadDesktopDraftSnapshot():null");
+        string raw = await CloseScript("typeof ezreadDesktopDraftSnapshot==='function'?ezreadDesktopDraftSnapshot():null", 2000, "draft-read");
         var values = json.Deserialize<Dictionary<string, string>>(raw);
         if (values == null) return false;
         string id = Guid.NewGuid().ToString();
         var bytes = Encoding.UTF8.GetBytes(json.Serialize(new { id = id, origin = options.Origin.GetLeftPart(UriPartial.Authority), values = values }));
         if (bytes.Length > 8 * 1024 * 1024) return false;
-        using (var stream = new FileStream(CloseDraftFile + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
-        if (File.Exists(CloseDraftFile)) File.Replace(CloseDraftFile + ".tmp", CloseDraftFile, null); else File.Move(CloseDraftFile + ".tmp", CloseDraftFile);
+        string temporary = CloseDraftFile + "." + id + ".tmp";
+        var writing = Task.Run(delegate {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+            return true;
+        });
+        try { await CloseStep(writing, 3000, "draft-write"); }
+        catch {
+            DeleteAfterWrite(writing, temporary);
+            throw;
+        }
+        if (File.Exists(CloseDraftFile)) File.Replace(temporary, CloseDraftFile, null); else File.Move(temporary, CloseDraftFile);
         // A cancelled close may be followed by a page reload. Do not replay
         // this snapshot over newer edits in the still-running browser.
-        try { await view.CoreWebView2.ExecuteScriptAsync("localStorage.setItem('ezread-close-drafts-id'," + json.Serialize(id) + ")"); }
+        try { await CloseScript("localStorage.setItem('ezread-close-drafts-id'," + json.Serialize(id) + ")", 1000, "draft-marker"); }
         catch (Exception exc) { Log("close-drafts-marker: " + exc.GetType().Name); }
         return true;
     }
@@ -560,7 +666,7 @@ internal sealed class ReaderWindow : Form
         BeginInvoke((Action)delegate {
             if (ClosingWindow) return;
             MessageBox.Show(this, message, "EzRead", MessageBoxButtons.OK, icon);
-            if (closeAfter && !IsDisposed) { mayClose = true; Close(); }
+            if (closeAfter && !IsDisposed) Close();
         });
     }
     private void OpenExternal(string url) {
@@ -606,14 +712,20 @@ internal sealed class ReaderWindow : Form
                     if (!options.Child) localDraftsSaved = await CaptureCloseDrafts();
                     Log("close-local-drafts=" + localDraftsSaved);
                     string request = json.Serialize(Guid.NewGuid().ToString());
-                    await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult=null;window.__ezreadCloseRequest=" + request + ";(async()=>{let result=false;try{result=typeof ezreadPrepareDesktopClose==='function'?await ezreadPrepareDesktopClose():true;}catch{}if(window.__ezreadCloseRequest===" + request + ")window.__ezreadCloseResult=result;})();");
+                    var saving = Stopwatch.StartNew();
+                    await CloseScript("window.__ezreadCloseResult=null;window.__ezreadCloseRequest=" + request + ";(async()=>{let result=false;try{result=typeof ezreadPrepareDesktopClose==='function'?await ezreadPrepareDesktopClose():true;}catch{}if(window.__ezreadCloseRequest===" + request + ")window.__ezreadCloseResult=result;})();", 2000, "save-start");
                     string answer = "null";
-                    for (int attempt = 0; attempt < 80 && answer == "null"; attempt++) {
+                    while (answer == "null" && saving.ElapsedMilliseconds < 8000) {
                         await Task.Delay(100);
-                        answer = await view.CoreWebView2.ExecuteScriptAsync("window.__ezreadCloseResult");
+                        int remaining = Math.Max(1, 8000 - (int)saving.ElapsedMilliseconds);
+                        answer = await CloseScript("window.__ezreadCloseResult", Math.Min(2000, remaining), "save-confirmation");
                     }
                     if (answer != "true") {
                         if (webviewFailed) throw new InvalidOperationException("WebView2 exited during close saving.");
+                        if (answer == "null") {
+                            Log("close-timeout stage=save-confirmation");
+                            throw new TimeoutException("save-confirmation");
+                        }
                         Log("close-save-unconfirmed result=" + answer);
                         RestoreClosingWindows(visibleWindows);
                         ShowWarning("仍有内容未能保存，窗口暂未关闭。请确认草稿已保存后重试。", MessageBoxIcon.Warning);
@@ -643,7 +755,10 @@ internal sealed class ReaderWindow : Form
                     } catch (Exception recovery) { Log("close-recovery: " + recovery.GetType().Name); }
                 }
                 RestoreClosingWindows(visibleWindows);
-                ShowWarning("无法完成关闭，窗口已恢复，请稍后重试。", MessageBoxIcon.Warning);
+                string reason = closeError is TimeoutException
+                    ? "关闭等待超时，窗口已恢复，尚未确认保存的内容不会被强制丢弃。请稍后重试。"
+                    : "无法完成关闭，窗口已恢复，请稍后重试。";
+                ShowWarning(reason, MessageBoxIcon.Warning);
             }
         }
         finally { preparingClose = false; }
